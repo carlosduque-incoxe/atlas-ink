@@ -30,6 +30,12 @@ constexpr int HTTP_TX_BUF = 512;
 // preserve the historic 60 s / five-hop behavior for existing callers.
 constexpr size_t READ_CHUNK = 1024;
 
+void secureClear(std::string& value) {
+  volatile char* data = value.empty() ? nullptr : &value[0];
+  for (size_t i = 0; i < value.size(); ++i) data[i] = 0;
+  value.clear();
+}
+
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
   HttpDownloader::ProgressCallback progress;
@@ -77,9 +83,9 @@ bool shouldAbort(Sink& sink) {
 }
 
 void clearCredentials(HttpDownloader::RequestOptions& options) {
-  options.username.clear();
-  options.password.clear();
-  options.bearerToken.clear();
+  secureClear(options.username);
+  secureClear(options.password);
+  secureClear(options.bearerToken);
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
@@ -102,11 +108,17 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const Http
     // answers 400 "Duplicate 'User-Agent' header found").
     http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
     if (hasBasicAuth(activeOptions)) {
-      const std::string credentials = activeOptions.username + ":" + activeOptions.password;
-      const String encoded = base64::encode(credentials.c_str());
-      http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+      std::string credentials = activeOptions.username + ":" + activeOptions.password;
+      std::string encoded = base64::encode(credentials.c_str()).c_str();
+      std::string header = std::string("Basic ") + encoded;
+      http.addHeader("Authorization", header);
+      secureClear(credentials);
+      secureClear(encoded);
+      secureClear(header);
     } else if (hasBearerAuth(activeOptions)) {
-      http.addHeader("Authorization", std::string("Bearer ") + activeOptions.bearerToken);
+      std::string header = std::string("Bearer ") + activeOptions.bearerToken;
+      http.addHeader("Authorization", header);
+      secureClear(header);
     }
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
@@ -192,12 +204,15 @@ HttpDownloader::DownloadError runGet(const std::string& url, const HttpDownloade
   esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
   if (hasBasicAuth(options)) {
     // Preemptive Basic auth, like the prior addHeader; don't wait for a 401.
-    const std::string credentials = options.username + ":" + options.password;
-    const String header = "Basic " + base64::encode(credentials.c_str());
+    std::string credentials = options.username + ":" + options.password;
+    std::string header = ("Basic " + base64::encode(credentials.c_str())).c_str();
     esp_http_client_set_header(client, "Authorization", header.c_str());
+    secureClear(credentials);
+    secureClear(header);
   } else if (hasBearerAuth(options)) {
-    const std::string header = "Bearer " + options.bearerToken;
+    std::string header = "Bearer " + options.bearerToken;
     esp_http_client_set_header(client, "Authorization", header.c_str());
+    secureClear(header);
   }
 
   // open()/read() does not auto-follow redirects (only perform() does), so step
@@ -313,6 +328,8 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const HttpDow
 #endif
 }
 }  // namespace
+
+HttpDownloader::RequestOptions::~RequestOptions() { clearCredentials(*this); }
 
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
                               const std::string& password) {

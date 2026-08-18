@@ -58,9 +58,14 @@ class AtlasActivity final : public Activity {
   void pollFetchWorker();
   void applyFetchResult();
   void clearWorkerSecrets();
+  void shutdownWifi();
+  void setStatusLineWithGeneratedAt(const char* prefix);
   void buildTaskSubtitle(const atlas_feed::Task& task, char* out, size_t outSize) const;
   std::string buildAgentLine(size_t index) const;
   const char* configStatusText() const;
+  bool handleTaskCardTouch(const Rect& screen, const ThemeMetrics& metrics);
+  void renderTaskCards(const Rect& screen, const ThemeMetrics& metrics, int listTop, int listHeight) const;
+  void renderTaskCard(const atlas_feed::Task& task, const Rect& card, bool selected) const;
   void renderTouchActions(const Rect& screen, const ThemeMetrics& metrics) const;
   bool handleTouchActions();
 

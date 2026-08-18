@@ -26,6 +26,8 @@ class HttpDownloader {
     uint32_t timeoutMs = 60000;
     uint32_t overallTimeoutMs = 0;
     int maxRedirects = 5;
+
+    ~RequestOptions();
   };
 
   enum DownloadError {

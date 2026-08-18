@@ -1,358 +1,304 @@
 #include "HomeActivity.h"
 
-#include <Bitmap.h>
-#include <Epub.h>
-#include <FsHelpers.h>
 #include <GfxRenderer.h>
-#include <HalStorage.h>
 #include <I18n.h>
-#include <Utf8.h>
-#include <Xtc.h>
+#include <Memory.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
-#include <vector>
 
-#include "CrossPointSettings.h"
-#include "CrossPointState.h"
+#include "AtlasDashboardFormat.h"
 #include "MappedInputManager.h"
-#include "OpdsServerStore.h"
-#include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-int HomeActivity::getMenuItemCount() const {
-  int count = 5;  // Atlas, File Browser, Recents, File transfer, Settings
-  if (!recentBooks.empty()) {
-    count += recentBooks.size();
+namespace {
+
+constexpr int SUMMARY_TOP = 76;
+constexpr int SUMMARY_HEIGHT = 134;
+constexpr int TASK_CARD_GAP = 6;
+constexpr int TASK_CARD_HEIGHT = 44;
+constexpr int ACTION_ROW_HEIGHT = 38;
+constexpr int ACTION_ROW_GAP = 5;
+constexpr int ACTION_MARKER_WIDTH = 8;
+constexpr int ACTION_TEXT_PAD_X = 18;
+constexpr int ACTION_TEXT_PAD_Y = 10;
+constexpr size_t HOME_CRITICAL_VISIBLE = 2;
+constexpr const char* ATLAS_LEARNING_PATH = "/Atlas-Aprender";
+
+void copyFeed(atlas_feed::Feed& dst, const atlas_feed::Feed& src) { memcpy(&dst, &src, sizeof(dst)); }
+
+}  // namespace
+
+HomeActivity::Action HomeActivity::actionFromIndex(const int index) {
+  switch (index) {
+    case 0:
+      return Action::Tasks;
+    case 1:
+      return Action::Learn;
+    case 2:
+      return Action::Library;
+    case 3:
+      return Action::Transfer;
+    case 4:
+      return Action::Settings;
+    default:
+      return Action::Tasks;
   }
-  if (hasOpdsServers) {
-    count++;
-  }
-  return count;
 }
 
-void HomeActivity::loadRecentBooks(int maxBooks) {
-  recentBooks.clear();
-  const auto& books = RECENT_BOOKS.getBooks();
-  recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
-
-  for (const RecentBook& book : books) {
-    // Limit to maximum number of recent books
-    if (recentBooks.size() >= maxBooks) {
-      break;
-    }
-
-    // Skip if file no longer exists
-    if (RecentBooksStore::isMissing(book)) {
-      continue;
-    }
-
-    recentBooks.push_back(book);
+int HomeActivity::actionToIndex(const Action action) {
+  switch (action) {
+    case Action::Tasks:
+      return 0;
+    case Action::Learn:
+      return 1;
+    case Action::Library:
+      return 2;
+    case Action::Transfer:
+      return 3;
+    case Action::Settings:
+      return 4;
+    case Action::Count:
+    default:
+      return 0;
   }
 }
 
-void HomeActivity::loadRecentCovers(int coverHeight) {
-  recentsLoading = true;
-  bool showingLoading = false;
-  Rect popupRect;
+const char* HomeActivity::actionLabel(const Action action) {
+  switch (action) {
+    case Action::Tasks:
+      return tr(STR_ATLAS_HOME_TASKS);
+    case Action::Learn:
+      return tr(STR_ATLAS_HOME_LEARN);
+    case Action::Library:
+      return tr(STR_ATLAS_HOME_LIBRARY);
+    case Action::Transfer:
+      return tr(STR_ATLAS_HOME_TRANSFER);
+    case Action::Settings:
+      return tr(STR_ATLAS_HOME_SETTINGS);
+    case Action::Count:
+    default:
+      return "";
+  }
+}
 
-  int progress = 0;
-  for (RecentBook& book : recentBooks) {
-    if (!book.coverBmpPath.empty()) {
-      std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
-      if (!Storage.exists(coverPath.c_str())) {
-        // If epub, try to load the metadata for title/author and cover
-        if (FsHelpers::hasEpubExtension(book.path)) {
-          Epub epub(book.path, "/.crosspoint");
-          // Skip loading css since we only need metadata here
-          epub.load(false, true);
+HomeActivity::Action HomeActivity::menuItemToAction(const HomeMenuItem item) {
+  switch (item) {
+    case HomeMenuItem::FILE_BROWSER:
+      return Action::Library;
+    case HomeMenuItem::FILE_TRANSFER:
+      return Action::Transfer;
+    case HomeMenuItem::SETTINGS_MENU:
+      return Action::Settings;
+    case HomeMenuItem::ATLAS:
+    case HomeMenuItem::NONE:
+    case HomeMenuItem::RECENTS:
+    case HomeMenuItem::OPDS_BROWSER:
+    default:
+      return Action::Tasks;
+  }
+}
 
-          // Try to generate thumbnail image for Continue Reading card
-          if (!showingLoading) {
-            showingLoading = true;
-            popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-          }
-          GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          bool success = epub.generateThumbBmp(coverHeight);
-          if (!success) {
-            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-            book.coverBmpPath = "";
-          }
-          coverRendered = false;
-          requestUpdate();
-        } else if (FsHelpers::hasXtcExtension(book.path)) {
-          // Handle XTC file
-          Xtc xtc(book.path, "/.crosspoint");
-          if (xtc.load()) {
-            // Try to generate thumbnail image for Continue Reading card
-            if (!showingLoading) {
-              showingLoading = true;
-              popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-            }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-            bool success = xtc.generateThumbBmp(coverHeight);
-            if (!success) {
-              RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-              book.coverBmpPath = "";
-            }
-            coverRendered = false;
-            requestUpdate();
-          }
-        }
-      }
-    }
-    progress++;
+void HomeActivity::loadCachedFeed() {
+  auto parser = makeUniqueNoThrow<atlas_feed::AtlasFeedJsonParser>();
+  if (!parser) {
+    hasFeed = false;
+    return;
   }
 
-  recentsLoaded = true;
-  recentsLoading = false;
+  if (AtlasFeedCache::load(*parser)) {
+    copyFeed(feed, parser->getFeed());
+    hasFeed = true;
+  } else {
+    memset(&feed, 0, sizeof(feed));
+    hasFeed = false;
+  }
 }
 
 void HomeActivity::onEnter() {
   Activity::onEnter();
-
-  hasOpdsServers = OPDS_STORE.hasServers();
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  loadRecentBooks(metrics.homeRecentBooksCount);
-
-  const auto base = static_cast<int>(recentBooks.size());
-  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
-
-  // Trigger first update
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  loadCachedFeed();
+  selectorIndex = actionToIndex(menuItemToAction(initialMenuItem));
   requestUpdate();
 }
 
-void HomeActivity::onExit() {
-  Activity::onExit();
-
-  // Free the stored cover buffer if any
-  freeCoverBuffer();
+void HomeActivity::activateSelection() {
+  switch (actionFromIndex(selectorIndex)) {
+    case Action::Tasks:
+      activityManager.goToAtlas();
+      break;
+    case Action::Learn:
+      activityManager.goToFileBrowser(ATLAS_LEARNING_PATH);
+      break;
+    case Action::Library:
+      activityManager.goToFileBrowser();
+      break;
+    case Action::Transfer:
+      activityManager.goToFileTransfer();
+      break;
+    case Action::Settings:
+      activityManager.goToSettings();
+      break;
+    case Action::Count:
+    default:
+      break;
+  }
 }
 
-bool HomeActivity::storeCoverBuffer() {
-  // render() must have already set the cover rect; without it we'd be back to
-  // cloning the whole framebuffer.
-  if (coverRectW <= 0 || coverRectH <= 0) return false;
-  freeCoverBuffer();
-  const size_t needed = renderer.getRegionByteSize(coverRectX, coverRectY, coverRectW, coverRectH);
-  if (needed == 0) return false;
-  coverBuffer = static_cast<uint8_t*>(malloc(needed));
-  if (!coverBuffer) {
-    LOG_ERR("HOME", "OOM: cover buffer (%u bytes)", (unsigned)needed);
-    return false;
-  }
-  coverBufferSize = needed;
-  if (!renderer.copyRegionToBuffer(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize)) {
-    free(coverBuffer);
-    coverBuffer = nullptr;
-    coverBufferSize = 0;
-    return false;
+bool HomeActivity::handleTouchActions(const Rect& screen, const ThemeMetrics& metrics) {
+  const int menuTop = screen.y + SUMMARY_TOP + SUMMARY_HEIGHT + metrics.verticalSpacing;
+  const int rowStep = ACTION_ROW_HEIGHT + ACTION_ROW_GAP;
+  int row = -1;
+  const auto touch = mappedInput.rowTouch(row, menuTop, rowStep, actionCount(), screen.x + metrics.contentSidePadding,
+                                          screen.x + screen.width - metrics.contentSidePadding, ACTION_ROW_HEIGHT);
+  if (touch == MappedInputManager::RowTouch::None) return false;
+
+  selectorIndex = row;
+  if (touch == MappedInputManager::RowTouch::Tap) {
+    activateSelection();
+  } else {
+    requestUpdate();
   }
   return true;
 }
 
-bool HomeActivity::restoreCoverBuffer() {
-  if (!coverBuffer || coverRectW <= 0 || coverRectH <= 0) return false;
-  return renderer.copyBufferToRegion(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize);
-}
-
-void HomeActivity::freeCoverBuffer() {
-  if (coverBuffer) {
-    free(coverBuffer);
-    coverBuffer = nullptr;
-  }
-  coverBufferSize = 0;
-  coverBufferStored = false;
-}
-
 void HomeActivity::loop() {
-  const int menuCount = getMenuItemCount();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-
-  auto activateSelection = [this] {
-    if (selectorIndex < recentBooks.size()) {
-      onSelectBook(recentBooks[selectorIndex].path);
-      return;
-    }
-    const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
-    switch (indexToMenuItem(menuIndex, hasOpdsServers)) {
-      case HomeMenuItem::FILE_BROWSER:
-        onFileBrowserOpen();
-        break;
-      case HomeMenuItem::ATLAS:
-        onAtlasOpen();
-        break;
-      case HomeMenuItem::RECENTS:
-        onRecentsOpen();
-        break;
-      case HomeMenuItem::OPDS_BROWSER:
-        onOpdsBrowserOpen();
-        break;
-      case HomeMenuItem::FILE_TRANSFER:
-        onFileTransferOpen();
-        break;
-      case HomeMenuItem::SETTINGS_MENU:
-        onSettingsOpen();
-        break;
-      default:
-        break;
-    }
-  };
-
-  buttonNavigator.onNext([this, menuCount] {
-    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+  buttonNavigator.onNext([this] {
+    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, actionCount());
     requestUpdate();
   });
-
-  buttonNavigator.onPrevious([this, menuCount] {
-    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+  buttonNavigator.onPrevious([this] {
+    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, actionCount());
     requestUpdate();
   });
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
-    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, actionCount());
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
-    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, actionCount());
     requestUpdate();
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) backPressSeen = true;
-
-  // Back is otherwise unused on the home menu: open the most recently read
-  // book directly (recentBooks is most-recent-first and already pruned of
-  // files missing from the SD card). backPressSeen guards against the stale
-  // release of the Back press that closed the previous activity.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backPressSeen && !recentBooks.empty()) {
-    onSelectBook(recentBooks[0].path);
-    return;
-  }
-
-  int tx = 0;
-  int ty = 0;
-  if (!recentBooks.empty() && mappedInput.wasScreenTouchDown(tx, ty) && tx >= 0 && tx < renderer.getScreenWidth() &&
-      ty >= metrics.homeTopPadding && ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
-    if (selectorIndex != 0) {
-      selectorIndex = 0;
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, !mappedInput.hasTouch(), false);
+  if (handleTouchActions(screen, metrics)) return;
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (selectorIndex != actionToIndex(Action::Tasks)) {
+      selectorIndex = actionToIndex(Action::Tasks);
       requestUpdate();
     }
     return;
   }
-
-  if (!recentBooks.empty() &&
-      mappedInput.wasTapInRect(0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight)) {
-    selectorIndex = 0;
-    activateSelection();
-    return;
-  }
-
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int renderedMenuSelection =
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
-  const int renderedMenuCount =
-      menuCount - (metrics.homeContinueReadingInMenu ? 0 : static_cast<int>(recentBooks.size()));
-  int menuRow = -1;
-  const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, metrics.menuRowHeight + metrics.menuSpacing,
-                                              renderedMenuCount, 0, INT32_MAX, metrics.menuRowHeight);
-  if (menuTouch != MappedInputManager::RowTouch::None) {
-    const int touchedIndex =
-        metrics.homeContinueReadingInMenu ? menuRow : menuRow + static_cast<int>(recentBooks.size());
-    if (menuTouch == MappedInputManager::RowTouch::Down) {
-      if (selectorIndex != touchedIndex) {
-        selectorIndex = touchedIndex;
-        requestUpdate();
-      }
-    } else {
-      selectorIndex = touchedIndex;
-      activateSelection();
-    }
-    return;
-  }
-
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activateSelection();
   }
 }
 
-void HomeActivity::render(RenderLock&&) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+void HomeActivity::renderHeader(const Rect& screen, const ThemeMetrics& metrics) const {
+  const int left = screen.x + metrics.contentSidePadding;
+  const int right = screen.x + screen.width - metrics.contentSidePadding;
+  const int titleY = screen.y + 12;
+  renderer.drawText(UI_12_FONT_ID, left, titleY, tr(STR_ATLAS_HOME_TITLE), true, EpdFontFamily::BOLD);
 
-  renderer.clearScreen();
-  bool bufferRestored = coverBufferStored && restoreCoverBuffer();
-
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
-                 metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
-
-  // Record the tile rect so storeCoverBuffer (called from the theme) knows
-  // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
-  // instead of the 48 KB full framebuffer the previous bind captured.
-  coverRectX = 0;
-  coverRectY = metrics.homeTopPadding;
-  coverRectW = pageWidth;
-  coverRectH = metrics.homeCoverTileHeight;
-
-  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                          std::bind(&HomeActivity::storeCoverBuffer, this));
-
-  // Build menu items dynamically
-  std::vector<const char*> menuItems = {"Atlas", tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Wifi, Folder, Recent, Transfer, Settings};
-
-  if (hasOpdsServers) {
-    menuItems.insert(menuItems.begin() + 3, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 3, Library);
+  char generatedAt[atlas_dashboard::GENERATED_AT_DISPLAY_SIZE] = {};
+  char freshness[64] = {};
+  if (hasFeed && feed.generatedAt[0] != '\0') {
+    atlas_dashboard::formatGeneratedAt(feed.generatedAt, generatedAt, sizeof(generatedAt));
+    snprintf(freshness, sizeof(freshness), "%s %s", tr(STR_ATLAS_LAST_UPDATE), generatedAt);
+  } else {
+    snprintf(freshness, sizeof(freshness), "%s %s", tr(STR_ATLAS_LAST_UPDATE), tr(STR_ATLAS_NO_DATA));
   }
-
-  if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
-    // Insert Continue Reading at the top if enabled in theme
-    menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
-    menuIcons.insert(menuIcons.begin(), Book);
-  }
-
-  GUI.drawButtonMenu(
-      renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
-      static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
-      [&menuItems](int index) { return std::string(menuItems[index]); },
-      [&menuIcons](int index) { return menuIcons[index]; });
-
-  const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  renderer.displayBuffer();
-
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-    requestUpdate();
-  } else if (!recentsLoaded && !recentsLoading) {
-    recentsLoading = true;
-    loadRecentCovers(metrics.homeCoverHeight);
+  renderer.drawText(SMALL_FONT_ID, left, titleY + 30, freshness);
+  if (hasFeed) {
+    const char* badge = tr(STR_ATLAS_CACHED_OFFLINE);
+    const int badgeWidth = renderer.getTextWidth(SMALL_FONT_ID, badge, EpdFontFamily::BOLD);
+    renderer.drawText(SMALL_FONT_ID, right - badgeWidth, titleY + 30, badge, true, EpdFontFamily::BOLD);
   }
 }
 
-void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToReader(path); }
+void HomeActivity::renderSummary(const Rect& screen, const ThemeMetrics& metrics) const {
+  const int left = screen.x + metrics.contentSidePadding;
+  const int width = screen.width - metrics.contentSidePadding * 2;
+  const int top = screen.y + SUMMARY_TOP;
 
-void HomeActivity::onAtlasOpen() { activityManager.goToAtlas(); }
+  char countLine[64] = {};
+  const size_t criticalCount = hasFeed ? atlas_dashboard::countCriticalTasks(feed) : 0U;
+  snprintf(countLine, sizeof(countLine), tr(STR_ATLAS_CRITICAL_COUNT_FMT), static_cast<unsigned>(criticalCount));
+  renderer.drawText(UI_12_FONT_ID, left, top, countLine, true, EpdFontFamily::BOLD);
 
-void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
+  if (!hasFeed) {
+    UITheme::drawCenteredWrappedText(renderer, Rect{left, top + 36, width, 86}, UI_10_FONT_ID,
+                                     tr(STR_ATLAS_HOME_NO_CACHE), 3);
+    return;
+  }
 
-void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
+  if (criticalCount == 0U) {
+    renderer.drawText(UI_10_FONT_ID, left, top + 42, tr(STR_ATLAS_NO_TASKS));
+    return;
+  }
 
-void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
+  size_t indexes[HOME_CRITICAL_VISIBLE] = {};
+  const size_t visible = atlas_dashboard::topCriticalTaskIndexes(feed, indexes, HOME_CRITICAL_VISIBLE);
+  for (size_t i = 0; i < visible; ++i) {
+    const atlas_feed::Task& task = feed.tasks[indexes[i]];
+    const int cardY = top + 38 + static_cast<int>(i) * (TASK_CARD_HEIGHT + TASK_CARD_GAP);
+    renderer.fillRect(left, cardY, width, TASK_CARD_HEIGHT);
+    char label[32] = {};
+    snprintf(label, sizeof(label), tr(STR_ATLAS_PRIORITY_FMT), static_cast<unsigned>(task.priority));
+    renderer.drawText(SMALL_FONT_ID, left + 10, cardY + 8, label, false, EpdFontFamily::BOLD);
+    const int titleX = left + 58;
+    const int titleWidth = width - 70;
+    const auto title = renderer.truncatedText(UI_10_FONT_ID, task.title, titleWidth, EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, titleX, cardY + 11, title.c_str(), false, EpdFontFamily::BOLD);
+  }
+}
 
-void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
+void HomeActivity::renderActions(const Rect& screen, const ThemeMetrics& metrics) const {
+  const int rowX = screen.x + metrics.contentSidePadding;
+  const int rowW = screen.width - metrics.contentSidePadding * 2;
+  const int menuTop = screen.y + SUMMARY_TOP + SUMMARY_HEIGHT + metrics.verticalSpacing;
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
 
-void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+  for (int i = 0; i < actionCount(); ++i) {
+    const int rowY = menuTop + i * (ACTION_ROW_HEIGHT + ACTION_ROW_GAP);
+    const bool selected = i == selectorIndex;
+    if (selected) {
+      renderer.fillRect(rowX, rowY, rowW, ACTION_ROW_HEIGHT);
+      renderer.fillRect(rowX + 3, rowY + 4, ACTION_MARKER_WIDTH, ACTION_ROW_HEIGHT - 8, false);
+    } else {
+      renderer.drawRect(rowX, rowY, rowW, ACTION_ROW_HEIGHT);
+      renderer.fillRect(rowX, rowY, ACTION_MARKER_WIDTH, ACTION_ROW_HEIGHT);
+    }
+
+    const char* label = actionLabel(actionFromIndex(i));
+    const int textY =
+        rowY + ACTION_TEXT_PAD_Y + std::max(0, (ACTION_ROW_HEIGHT - ACTION_TEXT_PAD_Y * 2 - lineHeight) / 2);
+    renderer.drawText(UI_12_FONT_ID, rowX + ACTION_TEXT_PAD_X, textY, label, !selected, EpdFontFamily::BOLD);
+  }
+}
+
+void HomeActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, !mappedInput.hasTouch(), false);
+
+  renderHeader(screen, metrics);
+  renderSummary(screen, metrics);
+  renderActions(screen, metrics);
+
+  if (!mappedInput.hasTouch()) {
+    const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+
+  renderer.displayBuffer();
+}

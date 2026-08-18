@@ -12,6 +12,7 @@
 #include <cstring>
 #include <utility>
 
+#include "AtlasDashboardFormat.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -23,6 +24,31 @@ namespace {
 constexpr int FETCH_WORKER_STACK = 8192;
 constexpr UBaseType_t FETCH_WORKER_PRIORITY = 1;
 constexpr unsigned long FETCH_EXIT_WAIT_MS = 15000UL;
+constexpr int TASK_CARD_HEIGHT = 76;
+constexpr int TASK_CARD_GAP = 8;
+constexpr int TASK_CARD_PAD_X = 14;
+constexpr int TASK_CARD_TITLE_Y = 10;
+constexpr int TASK_CARD_SUBTITLE_Y = 42;
+constexpr int TASK_CARD_RAIL_WIDTH = 6;
+constexpr int SELECTED_MARKER_SIZE = 8;
+constexpr int PAGE_LABEL_RESERVE = 22;
+
+size_t taskCardsPerPage(const int availableHeight, const size_t taskCount) {
+  const auto fit = [](const int height) -> size_t {
+    if (height < TASK_CARD_HEIGHT) return 1U;
+    return static_cast<size_t>(std::clamp((height + TASK_CARD_GAP) / (TASK_CARD_HEIGHT + TASK_CARD_GAP), 1, 3));
+  };
+
+  size_t cards = fit(availableHeight);
+  if (taskCount > cards && availableHeight >= TASK_CARD_HEIGHT + PAGE_LABEL_RESERVE) {
+    cards = fit(availableHeight - PAGE_LABEL_RESERVE);
+  }
+  return cards;
+}
+
+bool pageLabelFits(const int availableHeight, const size_t totalPages) {
+  return totalPages > 1U && availableHeight >= TASK_CARD_HEIGHT + PAGE_LABEL_RESERVE;
+}
 
 void secureClear(std::string& value) {
   volatile char* data = value.empty() ? nullptr : &value[0];
@@ -68,11 +94,7 @@ void AtlasActivity::onExit() {
   clearWorkerSecrets();
 
   if (networkUsed) {
-    if (WiFi.getMode() != WIFI_MODE_NULL) {
-      WiFi.disconnect(true);
-      WiFi.mode(WIFI_OFF);
-      delay(30);
-    }
+    shutdownWifi();
     silentRestart();
   }
 }
@@ -98,7 +120,7 @@ void AtlasActivity::loadConfigAndCache() {
     hasFeed = true;
     cacheIsStale = true;
     selectedTask = 0;
-    statusLine = std::string(tr(STR_ATLAS_CACHE_LOADED)) + " - " + feed.generatedAt;
+    setStatusLineWithGeneratedAt(tr(STR_ATLAS_CACHE_LOADED));
   } else {
     hasFeed = false;
     cacheIsStale = false;
@@ -130,16 +152,22 @@ void AtlasActivity::beginRefresh() {
   if (state == State::Fetching || state == State::WifiSelection) return;
 
   configStatus = ATLAS_CONFIG.load() ? AtlasConfigStatus::Ok : ATLAS_CONFIG.getStatus();
-  const auto config = ATLAS_CONFIG.getConfig();
+  auto config = ATLAS_CONFIG.getConfig();
   if (!config) {
     errorLine = configStatusText();
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     requestUpdate();
     return;
   }
 
   workerUrl = config->url;
   workerToken = config->token;
+  secureClear(config->url);
+  secureClear(config->token);
   networkUsed = true;
   state = State::WifiSelection;
   errorLine.clear();
@@ -153,11 +181,13 @@ void AtlasActivity::beginRefresh() {
 void AtlasActivity::onWifiSelectionComplete(const bool connected) {
   state = State::Ready;
   if (!connected) {
-    WiFi.scanDelete();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    shutdownWifi();
     errorLine = tr(STR_ATLAS_WIFI_CANCELLED);
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     clearWorkerSecrets();
     requestUpdate();
     return;
@@ -176,8 +206,13 @@ void AtlasActivity::startFetchWorker() {
   constexpr size_t parserHeadroom = sizeof(atlas_feed::AtlasFeedJsonParser) + 4096U;
   if (ESP.getMaxAllocHeap() < parserHeadroom) {
     errorLine = tr(STR_ATLAS_MEMORY_ERROR);
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     clearWorkerSecrets();
+    shutdownWifi();
     requestUpdate();
     return;
   }
@@ -186,8 +221,13 @@ void AtlasActivity::startFetchWorker() {
   if (workerResult) workerResult->parser = makeUniqueNoThrow<atlas_feed::AtlasFeedJsonParser>();
   if (!workerResult || !workerResult->parser) {
     errorLine = tr(STR_ATLAS_MEMORY_ERROR);
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     clearWorkerSecrets();
+    shutdownWifi();
     requestUpdate();
     return;
   }
@@ -202,14 +242,23 @@ void AtlasActivity::startFetchWorker() {
     workerTask = nullptr;
     state = State::Ready;
     errorLine = tr(STR_ATLAS_MEMORY_ERROR);
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     clearWorkerSecrets();
+    shutdownWifi();
     requestUpdate();
   }
 }
 
 void AtlasActivity::workerTrampoline(void* ctx) {
-  static_cast<AtlasActivity*>(ctx)->runFetchWorker();
+  auto* activity = static_cast<AtlasActivity*>(ctx);
+  activity->runFetchWorker();
+  // Completion means all runFetchWorker() locals and their destructors are
+  // finished. After this store the task touches no activity-owned state.
+  activity->workerDone.store(true, std::memory_order_release);
   vTaskDelete(nullptr);
 }
 
@@ -217,10 +266,7 @@ void AtlasActivity::runFetchWorker() {
   HalPowerManager::Lock powerLock;
   FetchResult* const result = workerResult.get();
   atlas_feed::AtlasFeedJsonParser* const parser = result ? result->parser.get() : nullptr;
-  if (!result || !parser) {
-    workerDone.store(true, std::memory_order_release);
-    return;
-  }
+  if (!result || !parser) return;
 
   HttpDownloader::RequestOptions options;
   options.bearerToken = workerToken;
@@ -236,6 +282,8 @@ void AtlasActivity::runFetchWorker() {
       },
       options);
 
+  secureClear(options.bearerToken);
+
   if (workerCancel.load(std::memory_order_acquire)) {
     result->aborted = true;
   } else if (!ok) {
@@ -248,8 +296,6 @@ void AtlasActivity::runFetchWorker() {
   } else {
     result->parseError = parser->getError();
   }
-
-  workerDone.store(true, std::memory_order_release);
 }
 
 void AtlasActivity::pollFetchWorker() {
@@ -257,8 +303,7 @@ void AtlasActivity::pollFetchWorker() {
   workerTask = nullptr;
   state = State::Ready;
   applyFetchResult();
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
+  shutdownWifi();
   clearWorkerSecrets();
   requestUpdate();
 }
@@ -266,7 +311,11 @@ void AtlasActivity::pollFetchWorker() {
 void AtlasActivity::applyFetchResult() {
   if (!workerResult || !workerResult->parser) {
     errorLine = tr(STR_ATLAS_MEMORY_ERROR);
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     return;
   }
   const FetchResult& result = *workerResult;
@@ -274,7 +323,11 @@ void AtlasActivity::applyFetchResult() {
 
   if (result.aborted) {
     errorLine = tr(STR_ATLAS_FETCH_CANCELLED);
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     return;
   }
 
@@ -285,7 +338,11 @@ void AtlasActivity::applyFetchResult() {
     } else {
       errorLine = tr(STR_ATLAS_FETCH_FAILED);
     }
-    statusLine = hasFeed ? tr(STR_ATLAS_LAST_GOOD) : tr(STR_ATLAS_NO_DATA);
+    if (hasFeed) {
+      setStatusLineWithGeneratedAt(tr(STR_ATLAS_LAST_GOOD));
+    } else {
+      statusLine = tr(STR_ATLAS_NO_DATA);
+    }
     cacheIsStale = hasFeed;
     return;
   }
@@ -300,7 +357,7 @@ void AtlasActivity::applyFetchResult() {
   } else {
     errorLine.clear();
   }
-  statusLine = std::string(tr(STR_ATLAS_UPDATED_PREFIX)) + feed.generatedAt;
+  setStatusLineWithGeneratedAt(tr(STR_ATLAS_UPDATED_PREFIX));
 }
 
 void AtlasActivity::clearWorkerSecrets() {
@@ -309,10 +366,34 @@ void AtlasActivity::clearWorkerSecrets() {
   workerResult.reset();
 }
 
+void AtlasActivity::shutdownWifi() {
+  WiFi.scanDelete();
+  if (WiFi.getMode() == WIFI_MODE_NULL) return;
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(30);
+}
+
+void AtlasActivity::setStatusLineWithGeneratedAt(const char* prefix) {
+  char generatedAt[atlas_dashboard::GENERATED_AT_DISPLAY_SIZE] = {};
+  atlas_dashboard::formatGeneratedAt(feed.generatedAt, generatedAt, sizeof(generatedAt));
+
+  char line[96] = {};
+  if (generatedAt[0] != '\0') {
+    snprintf(line, sizeof(line), "%s - %s %s", prefix, tr(STR_ATLAS_LAST_UPDATE), generatedAt);
+  } else {
+    snprintf(line, sizeof(line), "%s - %s %s", prefix, tr(STR_ATLAS_LAST_UPDATE), tr(STR_ATLAS_NO_DATA));
+  }
+  statusLine = line;
+}
+
 void AtlasActivity::loop() {
   pollFetchWorker();
   if (state == State::Fetching || state == State::WifiSelection) return;
 
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, !mappedInput.hasTouch(), false);
+  if (handleTaskCardTouch(screen, metrics)) return;
   if (handleTouchActions()) return;
 
   const int taskCount = static_cast<int>(feed.taskCount);
@@ -356,15 +437,18 @@ void AtlasActivity::buildTaskSubtitle(const atlas_feed::Task& task, char* out, c
     snprintf(due, sizeof(due), "%s", task.due);
   }
 
+  char priority[16] = {};
+  snprintf(priority, sizeof(priority), tr(STR_ATLAS_PRIORITY_FMT), static_cast<unsigned>(task.priority));
+
   const char* identity = task.identifier[0] != '\0' ? task.identifier : task.project;
   if (identity[0] != '\0' && due[0] != '\0') {
-    snprintf(out, outSize, "P%u - %s - %s", static_cast<unsigned>(task.priority), identity, due);
+    snprintf(out, outSize, "%s - %s - %s", priority, identity, due);
   } else if (identity[0] != '\0') {
-    snprintf(out, outSize, "P%u - %s", static_cast<unsigned>(task.priority), identity);
+    snprintf(out, outSize, "%s - %s", priority, identity);
   } else if (due[0] != '\0') {
-    snprintf(out, outSize, "P%u - %s", static_cast<unsigned>(task.priority), due);
+    snprintf(out, outSize, "%s - %s", priority, due);
   } else {
-    snprintf(out, outSize, "P%u - %s", static_cast<unsigned>(task.priority), task.state);
+    snprintf(out, outSize, "%s - %s", priority, task.state);
   }
 }
 
@@ -406,6 +490,39 @@ bool AtlasActivity::handleTouchActions() {
   return false;
 }
 
+bool AtlasActivity::handleTaskCardTouch(const Rect& screen, const ThemeMetrics& metrics) {
+  if (!mappedInput.hasTouch() || !hasFeed || feed.taskCount == 0U) return false;
+
+  const int contentTop =
+      screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int footerReserve = 52;
+  const int agentReserve = feed.agentCount > 0U ? 68 : 0;
+  const int contentBottom = screen.y + screen.height - footerReserve;
+  const int contentHeight = std::max(0, contentBottom - contentTop);
+  const int errorReserve = errorLine.empty() ? 0 : 32;
+  int listTop = contentTop + errorReserve;
+  int listHeight = std::max(0, contentHeight - agentReserve - errorReserve);
+
+  const size_t cardsPerPage = taskCardsPerPage(listHeight, feed.taskCount);
+  const auto range = atlas_dashboard::taskPageRange(feed.taskCount, static_cast<size_t>(selectedTask), cardsPerPage);
+  if (pageLabelFits(listHeight, range.totalPages)) {
+    listTop += PAGE_LABEL_RESERVE;
+    listHeight = std::max(0, listHeight - PAGE_LABEL_RESERVE);
+  }
+  if (listHeight < TASK_CARD_HEIGHT) return false;
+
+  const int visibleCount = static_cast<int>(range.count);
+  int row = -1;
+  const auto touch = mappedInput.rowTouch(row, listTop, TASK_CARD_HEIGHT + TASK_CARD_GAP, visibleCount,
+                                          screen.x + metrics.contentSidePadding,
+                                          screen.x + screen.width - metrics.contentSidePadding, TASK_CARD_HEIGHT);
+  if (touch == MappedInputManager::RowTouch::None) return false;
+
+  selectedTask = static_cast<int>(range.start + static_cast<size_t>(row));
+  requestUpdate();
+  return true;
+}
+
 void AtlasActivity::renderTouchActions(const Rect& screen, const ThemeMetrics& metrics) const {
   if (!mappedInput.hasTouch()) return;
   const int actionTop = screen.y + screen.height - 44;
@@ -417,6 +534,81 @@ void AtlasActivity::renderTouchActions(const Rect& screen, const ThemeMetrics& m
   renderer.drawLine(screen.x + half, actionTop + 6, screen.x + half, actionTop + 34);
 }
 
+void AtlasActivity::renderTaskCard(const atlas_feed::Task& task, const Rect& card, const bool selected) const {
+  const bool critical = atlas_dashboard::isCriticalPriority(task.priority);
+  const bool priorityRail = task.priority == 3U;
+  const bool textBlack = !critical;
+
+  if (critical) {
+    renderer.fillRect(card.x, card.y, card.width, card.height);
+  } else {
+    renderer.drawRect(card.x, card.y, card.width, card.height);
+    if (priorityRail) {
+      renderer.fillRect(card.x, card.y, TASK_CARD_RAIL_WIDTH, card.height);
+    }
+  }
+
+  if (selected) {
+    if (critical) {
+      renderer.drawRect(card.x + 2, card.y + 2, card.width - 4, card.height - 4, false);
+      renderer.fillRect(card.x + TASK_CARD_PAD_X, card.y + (card.height - SELECTED_MARKER_SIZE) / 2,
+                        SELECTED_MARKER_SIZE, SELECTED_MARKER_SIZE, false);
+    } else {
+      renderer.drawRect(card.x + 2, card.y + 2, card.width - 4, card.height - 4);
+      renderer.fillRect(card.x + TASK_CARD_PAD_X, card.y + (card.height - SELECTED_MARKER_SIZE) / 2,
+                        SELECTED_MARKER_SIZE, SELECTED_MARKER_SIZE);
+    }
+  }
+
+  char priority[16] = {};
+  snprintf(priority, sizeof(priority), tr(STR_ATLAS_PRIORITY_FMT), static_cast<unsigned>(task.priority));
+  const int priorityWidth = renderer.getTextWidth(SMALL_FONT_ID, priority, EpdFontFamily::BOLD);
+  renderer.drawText(SMALL_FONT_ID, card.x + card.width - TASK_CARD_PAD_X - priorityWidth, card.y + TASK_CARD_TITLE_Y,
+                    priority, textBlack, EpdFontFamily::BOLD);
+
+  const int textX = card.x + TASK_CARD_PAD_X + (selected ? SELECTED_MARKER_SIZE + 10 : 0) +
+                    (priorityRail ? TASK_CARD_RAIL_WIDTH + 6 : 0);
+  const int textW = std::max(0, card.width - (textX - card.x) - TASK_CARD_PAD_X - priorityWidth - 8);
+  const auto title = renderer.truncatedText(UI_10_FONT_ID, task.title, textW, EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, textX, card.y + TASK_CARD_TITLE_Y, title.c_str(), textBlack, EpdFontFamily::BOLD);
+
+  char subtitle[96] = {};
+  buildTaskSubtitle(task, subtitle, sizeof(subtitle));
+  const int subtitleW = std::max(0, card.width - (textX - card.x) - TASK_CARD_PAD_X);
+  const auto clippedSubtitle = renderer.truncatedText(SMALL_FONT_ID, subtitle, subtitleW);
+  renderer.drawText(SMALL_FONT_ID, textX, card.y + TASK_CARD_SUBTITLE_Y, clippedSubtitle.c_str(), textBlack);
+}
+
+void AtlasActivity::renderTaskCards(const Rect& screen, const ThemeMetrics& metrics, const int listTop,
+                                    const int listHeight) const {
+  const size_t cardsPerPage = taskCardsPerPage(listHeight, feed.taskCount);
+  const auto range = atlas_dashboard::taskPageRange(feed.taskCount, static_cast<size_t>(selectedTask), cardsPerPage);
+  int cardListTop = listTop;
+  if (pageLabelFits(listHeight, range.totalPages)) {
+    char pageLabel[16] = {};
+    snprintf(pageLabel, sizeof(pageLabel), "%u/%u", static_cast<unsigned>(range.pageIndex + 1U),
+             static_cast<unsigned>(range.totalPages));
+    const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, pageLabel);
+    renderer.drawText(SMALL_FONT_ID, screen.x + screen.width - metrics.contentSidePadding - labelWidth, listTop,
+                      pageLabel);
+    cardListTop += PAGE_LABEL_RESERVE;
+  }
+
+  const int cardX = screen.x + metrics.contentSidePadding;
+  const int cardWidth = screen.width - metrics.contentSidePadding * 2;
+  // cardsPerPage was finalized once from the unmodified list height, including
+  // the page-label reserve when needed. Render exactly the same range exposed
+  // to touch and button navigation; recalculating here can hide a selected row.
+  const size_t visible = range.count;
+
+  for (size_t i = 0; i < visible; ++i) {
+    const size_t taskIndex = range.start + i;
+    const Rect card{cardX, cardListTop + static_cast<int>(i) * (TASK_CARD_HEIGHT + TASK_CARD_GAP), cardWidth,
+                    TASK_CARD_HEIGHT};
+    renderTaskCard(feed.tasks[taskIndex], card, taskIndex == static_cast<size_t>(selectedTask));
+  }
+}
+
 void AtlasActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
@@ -424,7 +616,8 @@ void AtlasActivity::render(RenderLock&&) {
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, !mappedInput.hasTouch(), false);
   const int pageWidth = screen.width;
 
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight}, "Atlas");
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_ATLAS_HOME_TASKS));
   GUI.drawSubHeader(
       renderer,
       Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
@@ -433,7 +626,7 @@ void AtlasActivity::render(RenderLock&&) {
   const int contentTop =
       screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
   const int footerReserve = mappedInput.hasTouch() ? 52 : metrics.verticalSpacing;
-  const int agentReserve = hasFeed ? 68 : 0;
+  const int agentReserve = hasFeed && feed.agentCount > 0U ? 68 : 0;
   const int contentBottom = screen.y + screen.height - footerReserve;
   const int contentHeight = std::max(0, contentBottom - contentTop);
 
@@ -460,33 +653,21 @@ void AtlasActivity::render(RenderLock&&) {
   } else {
     const int listTop = contentTop + (errorLine.empty() ? 0 : 32);
     const int listHeight = std::max(0, contentHeight - agentReserve - (errorLine.empty() ? 0 : 32));
-    GUI.drawList(
-        renderer, Rect{screen.x, listTop, screen.width, listHeight}, static_cast<int>(feed.taskCount), selectedTask,
-        [this](int index) { return std::string(feed.tasks[index].title); },
-        [this](int index) {
-          char subtitle[96];
-          buildTaskSubtitle(feed.tasks[index], subtitle, sizeof(subtitle));
-          return std::string(subtitle);
-        });
+    renderTaskCards(screen, metrics, listTop, listHeight);
   }
 
-  if (hasFeed) {
+  if (hasFeed && feed.agentCount > 0U) {
     int y = screen.y + screen.height - footerReserve - 58;
-    if (!mappedInput.hasTouch()) y -= metrics.buttonHintsHeight;
     y = std::max(y, contentTop + 12);
     renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, y, tr(STR_ATLAS_AGENTS), true,
                       EpdFontFamily::BOLD);
-    if (feed.agentCount == 0) {
-      renderer.drawText(SMALL_FONT_ID, screen.x + metrics.contentSidePadding, y + 22, tr(STR_ATLAS_NO_AGENTS));
-    } else {
-      const size_t visibleAgents = std::min(feed.agentCount, static_cast<size_t>(2));
-      for (size_t i = 0; i < visibleAgents; ++i) {
-        const auto line = buildAgentLine(i);
-        const auto clipped =
-            renderer.truncatedText(SMALL_FONT_ID, line.c_str(), pageWidth - metrics.contentSidePadding * 2);
-        renderer.drawText(SMALL_FONT_ID, screen.x + metrics.contentSidePadding, y + 22 + static_cast<int>(i) * 16,
-                          clipped.c_str());
-      }
+    const size_t visibleAgents = std::min(feed.agentCount, static_cast<size_t>(2));
+    for (size_t i = 0; i < visibleAgents; ++i) {
+      const auto line = buildAgentLine(i);
+      const auto clipped =
+          renderer.truncatedText(SMALL_FONT_ID, line.c_str(), pageWidth - metrics.contentSidePadding * 2);
+      renderer.drawText(SMALL_FONT_ID, screen.x + metrics.contentSidePadding, y + 22 + static_cast<int>(i) * 16,
+                        clipped.c_str());
     }
   }
 

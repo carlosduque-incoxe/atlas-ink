@@ -6,16 +6,32 @@
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <Txt.h>
 #include <Xtc.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "AtlasDashboardFormat.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
+#include "atlas/AtlasFeedCache.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
+
+namespace {
+
+constexpr size_t SLEEP_FILE_NAME_BUFFER = 500;
+
+}  // namespace
 
 void SleepActivity::onEnter() {
   Activity::onEnter();
@@ -52,6 +68,7 @@ void SleepActivity::onEnter() {
         return renderCustomSleepScreen();
       }
     default:
+      if (renderAtlasGlanceSleepScreen()) return;
       return renderDefaultSleepScreen();
   }
 }
@@ -88,7 +105,8 @@ void SleepActivity::renderCustomSleepScreen() const {
 
   if (sleepDir) {
     std::vector<std::string> files;
-    char name[500];
+    files.reserve(8);
+    char name[SLEEP_FILE_NAME_BUFFER];
     // collect all valid BMP files
     for (auto dirFile = dir.openNextFile(); dirFile; dirFile = dir.openNextFile()) {
       if (dirFile.isDirectory()) {
@@ -160,7 +178,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
 
   renderer.clearScreen();
   renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "Atlas Ink", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_ATLAS_HOME_TITLE), true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
 
   // Make sleep screen dark unless light is selected in settings
@@ -169,6 +187,74 @@ void SleepActivity::renderDefaultSleepScreen() const {
   }
 
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+bool SleepActivity::renderAtlasGlanceSleepScreen() const {
+  auto parser = makeUniqueNoThrow<atlas_feed::AtlasFeedJsonParser>();
+  if (!parser || !AtlasFeedCache::load(*parser)) return false;
+
+  const atlas_feed::Feed& feed = parser->getFeed();
+  if (feed.generatedAt[0] == '\0') return false;
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int left = metrics.contentSidePadding;
+  const int right = pageWidth - metrics.contentSidePadding;
+  const int width = pageWidth - metrics.contentSidePadding * 2;
+
+  renderer.clearScreen();
+
+  constexpr int logoSize = 120;
+  const int logoX = (pageWidth - logoSize) / 2;
+  const int logoY = 22;
+  renderer.drawImage(Logo120, logoX, logoY, logoSize, logoSize);
+  renderer.drawCenteredText(UI_12_FONT_ID, logoY + logoSize + 14, tr(STR_ATLAS_HOME_TITLE), true, EpdFontFamily::BOLD);
+
+  char generatedAt[atlas_dashboard::GENERATED_AT_DISPLAY_SIZE] = {};
+  atlas_dashboard::formatGeneratedAt(feed.generatedAt, generatedAt, sizeof(generatedAt));
+
+  char freshness[72] = {};
+  snprintf(freshness, sizeof(freshness), "%s %s", tr(STR_ATLAS_LAST_UPDATE), generatedAt);
+  renderer.drawCenteredText(SMALL_FONT_ID, logoY + logoSize + 42, freshness);
+
+  const char* offline = tr(STR_ATLAS_CACHED_OFFLINE);
+  const int offlineWidth = renderer.getTextWidth(SMALL_FONT_ID, offline, EpdFontFamily::BOLD);
+  renderer.drawText(SMALL_FONT_ID, right - offlineWidth, pageHeight - 34, offline, true, EpdFontFamily::BOLD);
+
+  constexpr int cardHeight = 92;
+  const int cardY = std::min(pageHeight - 150, logoY + logoSize + 82);
+  const size_t taskIndex = atlas_dashboard::sleepTaskIndex(feed);
+  if (taskIndex == atlas_dashboard::NO_TASK_INDEX) {
+    renderer.drawRect(left, cardY, width, cardHeight);
+    UITheme::drawCenteredWrappedText(renderer, Rect{left + 12, cardY + 12, width - 24, cardHeight - 24}, UI_10_FONT_ID,
+                                     tr(STR_ATLAS_NO_TASKS), 2);
+  } else {
+    const atlas_feed::Task& task = feed.tasks[taskIndex];
+    const bool critical = atlas_dashboard::isCriticalPriority(task.priority);
+    if (critical) {
+      renderer.fillRect(left, cardY, width, cardHeight);
+    } else {
+      renderer.drawRect(left, cardY, width, cardHeight);
+    }
+
+    char priority[16] = {};
+    snprintf(priority, sizeof(priority), tr(STR_ATLAS_PRIORITY_FMT), static_cast<unsigned>(task.priority));
+    renderer.drawText(SMALL_FONT_ID, left + 14, cardY + 12, priority, !critical, EpdFontFamily::BOLD);
+
+    const int textX = left + 58;
+    const int titleW = std::max(0, width - 76);
+    const auto title = renderer.truncatedText(UI_12_FONT_ID, task.title, titleW, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, textX, cardY + 28, title.c_str(), !critical, EpdFontFamily::BOLD);
+  }
+
+  // Preserve the existing sleep-screen Light/Dark setting for the Atlas glance.
+  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) {
+    renderer.invertScreen();
+  }
+
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  return true;
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {

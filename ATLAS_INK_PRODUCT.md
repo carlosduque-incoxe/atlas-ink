@@ -99,9 +99,9 @@ Límites previstos: respuesta <= 12 KiB, máximo 5 tareas y 5 agentes, textos no
 ### Fase B — Portada Atlas
 
 - [ ] Endpoint de feed reducido y autenticación de dispositivo de solo lectura.
-- [ ] Parser y tests de límites/truncación.
-- [ ] Actividad principal Atlas con caché y actualización manual.
-- [ ] Tareas críticas de Aerovía/Vikunja.
+- [x] Parser y tests de límites/truncación.
+- [x] Actividad principal Atlas con caché y actualización manual.
+- [x] Tareas críticas de Aerovía/Vikunja.
 - [ ] Estado resumido de agentes/automatizaciones.
 - [ ] QA físico 30/60/120 s, red caída, respuesta corrupta y rollback.
 
@@ -110,7 +110,7 @@ Límites previstos: respuesta <= 12 KiB, máximo 5 tareas y 5 agentes, textos no
 - [ ] Sustituir el menú principal heredado por Portada, Hoy, Tareas, Agentes, Estado, Consulta, Aprender y Ajustes.
 - [ ] Convertir reposo/bloqueo en panel offline útil con calendario y tarea crítica.
 - [ ] Definir feed agregado versionado para portada/calendario/agentes sin credenciales maestras.
-- [ ] Mantener lector únicamente como capacidad secundaria opcional.
+- [x] Mantener lector únicamente como capacidad secundaria opcional.
 - [ ] Verificar botones, táctil, despertar, reposo, batería y rollback en hardware real.
 
 ### Fase B3 — Aprendizaje semanal
