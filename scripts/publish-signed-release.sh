@@ -34,5 +34,5 @@ openssl dgst -sha256 -verify keys/atlas-ink-release-public.pem \
 
 gh release create "$version" \
   "$out/firmware.bin" "$out/firmware.bin.manifest" "$out/firmware.bin.sig" \
-  --repo "$repo" --verify-tag --title "Atlas Ink $version" \
-  --notes "Signed Atlas Ink bootstrap for XTEINK X4 (ESP32-C3)."
+  --repo "$repo" --target "$(git rev-parse HEAD)" --title "Atlas Ink $version" \
+  --notes "Signed Atlas Ink firmware for XTEINK X4 (ESP32-C3). Built and verified locally; manual OTA promotion."
