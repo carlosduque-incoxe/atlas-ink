@@ -65,6 +65,12 @@ bool connectSavedNetwork() {
 
 void loop(bool usbConnected) {
   if (running || !usbConnected || static_cast<long>(millis() - nextAttemptAt) < 0) return;
+  // Never interrupt an interactive Wi-Fi activity or web transfer. Defer and
+  // try again after that owner has shut the radio down.
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    scheduleAfter(NO_CREDENTIAL_RETRY_MS);
+    return;
+  }
   running = true;
   LOG_INF("ATLAS_OTA", "Autonomous update check starting");
 
