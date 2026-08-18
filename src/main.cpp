@@ -457,6 +457,7 @@ void setup() {
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
   allowSleepAt = millis() + 2000;
+  atlas_boot_health::markRuntimeReady();
 }
 
 void loop() {
@@ -466,7 +467,6 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   gpio.update();
-  atlas_boot_health::loop();
   atlas_auto_ota::loop(gpio.isUsbConnected());
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
@@ -590,4 +590,5 @@ void loop() {
       delay(10);
     }
   }
+  atlas_boot_health::loop();
 }

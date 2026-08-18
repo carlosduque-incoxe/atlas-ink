@@ -26,7 +26,7 @@ class StreamingJsonParser {
   void reset();
   void feed(const char* data, size_t len);
 
-  bool hasError() const { return error; }
+  bool hasError() const { return error || tokenOverflowSeen; }
 
  private:
   enum class State : uint8_t {
@@ -62,6 +62,7 @@ class StreamingJsonParser {
   bool expectingValue;
   bool escaped;
   bool tokenOverflow;
+  bool tokenOverflowSeen;
   bool error;
 
   Container nestingStack[MAX_NESTING];

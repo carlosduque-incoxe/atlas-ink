@@ -33,6 +33,8 @@ void ReleaseJsonParser::reset() {
   tagFound = false;
   firmwareFound = false;
   signatureFound = false;
+  ambiguous = false;
+  topLevelComplete = false;
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
   currentAssetDigest[0] = '\0';
@@ -44,6 +46,8 @@ void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, l
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
 bool ReleaseJsonParser::foundSignature() const { return signatureFound; }
+bool ReleaseJsonParser::hasError() const { return parser.hasError() || ambiguous; }
+bool ReleaseJsonParser::isComplete() const { return topLevelComplete && !hasError(); }
 const char* ReleaseJsonParser::getTagName() const { return tagName; }
 const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 const char* ReleaseJsonParser::getFirmwareDigest() const { return firmwareDigest; }
@@ -52,13 +56,23 @@ size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
   if (strcmp(currentAssetName, "firmware.bin") == 0) {
-    memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
-    memcpy(firmwareDigest, currentAssetDigest, sizeof(firmwareDigest));
-    firmwareSize = currentAssetSize;
-    firmwareFound = true;
+    if (firmwareFound) {
+      ambiguous = true;
+    } else {
+      memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
+      memcpy(firmwareDigest, currentAssetDigest, sizeof(firmwareDigest));
+      firmwareSize = currentAssetSize;
+      firmwareFound = true;
+      if (currentAssetUrl[0] == '\0' || currentAssetDigest[0] == '\0' || currentAssetSize == 0) ambiguous = true;
+    }
   } else if (strcmp(currentAssetName, "firmware.bin.sig") == 0) {
-    memcpy(signatureUrl, currentAssetUrl, sizeof(signatureUrl));
-    signatureFound = true;
+    if (signatureFound) {
+      ambiguous = true;
+    } else {
+      memcpy(signatureUrl, currentAssetUrl, sizeof(signatureUrl));
+      signatureFound = true;
+      if (currentAssetUrl[0] == '\0') ambiguous = true;
+    }
   }
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
@@ -173,7 +187,10 @@ void ReleaseJsonParser::sOnObjectEnd(void* ctx) {
 
   switch (self->position) {
     case Position::TOP_LEVEL:
-      if (self->depth > 0) self->depth--;
+      if (self->depth > 0) {
+        if (self->depth == 1) self->topLevelComplete = true;
+        self->depth--;
+      }
       break;
     case Position::IN_ASSET_OBJECT:
       self->assetDepth--;

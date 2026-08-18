@@ -19,9 +19,11 @@ new runtime responsibility is to establish the managed update channel:
 - binds the signature to version, byte size and GitHub SHA-256 digest;
 - calculates SHA-256 while streaming into the inactive OTA partition and
   refuses to select the slot unless size, digest, ESP image and chip guard pass;
-- records the previous and target A/B slots in NVS; a new slot gets one boot
-  attempt and is confirmed only after a 60-second health window, otherwise the
-  next reset rolls back to the previous slot;
+- records the previous and target A/B slots in one checksummed NVS blob; a new
+  slot gets one boot attempt and is armed only after storage, display, settings
+  and activity routing initialize; it must then survive 60 seconds and at least
+  100 complete main-loop iterations, otherwise the next reset retries rollback
+  to the previous slot;
 - never erases stock flash, NVS, SD data, or Wi-Fi credentials.
 
 GitHub TLS protects transport, while the pinned key protects release authority.

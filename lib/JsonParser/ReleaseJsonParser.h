@@ -18,6 +18,8 @@ class ReleaseJsonParser {
   bool foundTag() const;
   bool foundFirmware() const;
   bool foundSignature() const;
+  bool hasError() const;
+  bool isComplete() const;
   const char* getTagName() const;
   const char* getFirmwareUrl() const;
   const char* getFirmwareDigest() const;
@@ -68,6 +70,8 @@ class ReleaseJsonParser {
   bool tagFound;
   bool firmwareFound;
   bool signatureFound;
+  bool ambiguous;
+  bool topLevelComplete;
 
   char currentAssetName[32];
   char currentAssetUrl[512];

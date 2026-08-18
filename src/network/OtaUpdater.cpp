@@ -17,6 +17,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "AtlasBootHealth.h"
@@ -27,9 +28,10 @@ namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/carlosduque-incoxe/atlas-ink/releases/latest";
 
 bool parseSemver(const char* text, int& major, int& minor, int& patch) {
-  if (!text) return false;
-  while (*text != '\0' && (*text < '0' || *text > '9')) ++text;
-  return sscanf(text, "%d.%d.%d", &major, &minor, &patch) == 3;
+  if (!text || *text == '\0') return false;
+  int consumed = 0;
+  if (sscanf(text, "%d.%d.%d%n", &major, &minor, &patch, &consumed) != 3) return false;
+  return text[consumed] == '\0' && major >= 0 && minor >= 0 && patch >= 0;
 }
 
 int hexNibble(char c) {
@@ -79,9 +81,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // on top of the TLS session's heap during the fetch; with -fno-exceptions an
   // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
   // User-Agent (see HttpDownloader).
-  ReleaseJsonParser releaseParser;
+  auto releaseParser = std::unique_ptr<ReleaseJsonParser>(new (std::nothrow) ReleaseJsonParser());
+  if (!releaseParser) return OOM_ERROR;
   const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
-    releaseParser.feed(reinterpret_cast<const char*>(data), len);
+    releaseParser->feed(reinterpret_cast<const char*>(data), len);
     return true;
   });
   if (!ok) {
@@ -89,29 +92,34 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return HTTP_ERROR;
   }
 
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s signature=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no", releaseParser.foundSignature() ? "yes" : "no");
+  if (releaseParser->hasError() || !releaseParser->isComplete()) {
+    LOG_ERR("OTA", "Release JSON is malformed, ambiguous, truncated, or oversized");
+    return JSON_PARSE_ERROR;
+  }
 
-  if (!releaseParser.foundTag()) {
+  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s signature=%s", releaseParser->foundTag() ? "yes" : "no",
+          releaseParser->foundFirmware() ? "yes" : "no", releaseParser->foundSignature() ? "yes" : "no");
+
+  if (!releaseParser->foundTag()) {
     LOG_ERR("OTA", "No tag_name in release JSON");
     return JSON_PARSE_ERROR;
   }
 
-  if (!releaseParser.foundFirmware()) {
+  if (!releaseParser->foundFirmware()) {
     LOG_ERR("OTA", "No firmware.bin asset found");
     return NO_UPDATE;
   }
 
-  if (!releaseParser.foundSignature()) {
+  if (!releaseParser->foundSignature()) {
     LOG_ERR("OTA", "No firmware.bin.sig asset found");
     return SIGNATURE_ERROR;
   }
 
-  latestVersion = releaseParser.getTagName();
-  otaUrl = releaseParser.getFirmwareUrl();
-  otaDigest = releaseParser.getFirmwareDigest();
-  otaSignatureUrl = releaseParser.getSignatureUrl();
-  otaSize = releaseParser.getFirmwareSize();
+  latestVersion = releaseParser->getTagName();
+  otaUrl = releaseParser->getFirmwareUrl();
+  otaDigest = releaseParser->getFirmwareDigest();
+  otaSignatureUrl = releaseParser->getSignatureUrl();
+  otaSize = releaseParser->getFirmwareSize();
   totalSize = otaSize;
 
   if (otaSize == 0 || !parseGithubDigest(otaDigest.c_str(), otaSha256)) {
@@ -183,8 +191,8 @@ bool OtaUpdater::isUpdateNewer() const {
 
   const auto currentVersion = CROSSPOINT_VERSION;
 
-  // GitHub tags may be prefixed (for example "v1.5.2"). Refuse an
-  // unparseable version instead of comparing uninitialised integers.
+  // Atlas Ink releases use one canonical bare MAJOR.MINOR.PATCH grammar.
+  // Refuse anything else instead of guessing an ordering.
   if (!parseSemver(latestVersion.c_str(), latestMajor, latestMinor, latestPatch) ||
       !parseSemver(currentVersion, currentMajor, currentMinor, currentPatch)) {
     LOG_ERR("OTA", "Invalid semver current=%s latest=%s", currentVersion, latestVersion.c_str());
@@ -237,9 +245,13 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     LOG_ERR("OTA", "No OTA partition available");
     return INTERNAL_UPDATE_ERROR;
   }
+  if (otaSize > updatePartition->size) {
+    LOG_ERR("OTA", "Signed firmware is too large for OTA slot: %zu > %zu", otaSize, updatePartition->size);
+    return INTERNAL_UPDATE_ERROR;
+  }
 
   esp_ota_handle_t otaHandle = 0;
-  esp_err_t esp_err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &otaHandle);
+  esp_err_t esp_err = esp_ota_begin(updatePartition, otaSize, &otaHandle);
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_ota_begin failed: %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;
@@ -259,7 +271,13 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   bool wrongChip = false;
   mbedtls_sha256_context downloadSha;
   mbedtls_sha256_init(&downloadSha);
-  mbedtls_sha256_starts(&downloadSha, 0);
+  bool hashOk = mbedtls_sha256_starts(&downloadSha, 0) == 0;
+  if (!hashOk) {
+    mbedtls_sha256_free(&downloadSha);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    esp_ota_abort(otaHandle);
+    return DIGEST_ERROR;
+  }
   const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);
@@ -276,11 +294,14 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
         }
       }
     }
+    if (mbedtls_sha256_update(&downloadSha, data, len) != 0) {
+      hashOk = false;
+      return false;
+    }
     if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
       flashOk = false;
       return false;  // abort the transfer
     }
-    mbedtls_sha256_update(&downloadSha, data, len);
     processedSize += len;
     // Fire the callback only on whole-percent change. Per-chunk updates wake the
     // render task, whose framebuffer work contends with TLS on the internal arena,
@@ -298,8 +319,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
-  uint8_t downloadedSha[32];
-  mbedtls_sha256_finish(&downloadSha, downloadedSha);
+  uint8_t downloadedSha[32]{};
+  if (hashOk && mbedtls_sha256_finish(&downloadSha, downloadedSha) != 0) hashOk = false;
   mbedtls_sha256_free(&downloadSha);
 
   if (wrongChip) {
@@ -308,9 +329,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return WRONG_DEVICE_ERROR;
   }
 
-  if (!fetchOk || !flashOk) {
+  if (!fetchOk || !flashOk || !hashOk) {
     LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
     esp_ota_abort(otaHandle);
+    if (!hashOk) return DIGEST_ERROR;
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
   }
 

@@ -1,4 +1,4 @@
-name: Compile Release
+name: Build Release Artifact (offline signing required)
 permissions:
   contents: read
 on:
@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-release:
+    name: Build unsigned artifact for Atlas verification
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -49,3 +50,11 @@ jobs:
             .pio/build/gh_release/firmware.elf
             .pio/build/gh_release/firmware.map
             .pio/build/gh_release/partitions.bin
+
+      - name: Record offline signing gate
+        run: |
+          {
+            echo '## Not a published firmware release'
+            echo 'This workflow only builds an unsigned artifact.'
+            echo 'Atlas must inspect it and run scripts/publish-signed-release.sh with the offline key.'
+          } >> "$GITHUB_STEP_SUMMARY"

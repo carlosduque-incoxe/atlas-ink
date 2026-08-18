@@ -187,11 +187,36 @@ TEST(ReleaseJsonParser, SignedFirmwareAssetsAndDigest) {
   EXPECT_TRUE(parser.foundTag());
   EXPECT_TRUE(parser.foundFirmware());
   EXPECT_TRUE(parser.foundSignature());
+  EXPECT_FALSE(parser.hasError());
+  EXPECT_TRUE(parser.isComplete());
   EXPECT_STREQ(parser.getTagName(), "1.5.2");
   EXPECT_STREQ(parser.getFirmwareUrl(), "https://example.com/firmware.bin");
   EXPECT_STREQ(parser.getFirmwareDigest(), "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
   EXPECT_STREQ(parser.getSignatureUrl(), "https://example.com/firmware.bin.sig");
   EXPECT_EQ(parser.getFirmwareSize(), 1234567u);
+}
+
+TEST(ReleaseJsonParser, DuplicateSignedAssetsAreRejected) {
+  const char* json = R"({"tag_name":"1.5.2","assets":[
+    {"name":"firmware.bin","size":100,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","browser_download_url":"https://example.com/a.bin"},
+    {"name":"firmware.bin","size":100,"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","browser_download_url":"https://example.com/b.bin"},
+    {"name":"firmware.bin.sig","size":71,"browser_download_url":"https://example.com/firmware.bin.sig"}
+  ]})";
+  ReleaseJsonParser parser;
+  parser.feed(json, strlen(json));
+  EXPECT_TRUE(parser.hasError());
+  EXPECT_FALSE(parser.isComplete());
+}
+
+TEST(ReleaseJsonParser, TruncatedSignedReleaseIsRejected) {
+  const char* json = R"({"tag_name":"1.5.2","assets":[
+    {"name":"firmware.bin","size":100,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","browser_download_url":"https://example.com/a.bin"},
+    {"name":"firmware.bin.sig","size":71,"browser_download_url":"https://example.com/firmware.bin.sig"}
+  ])";
+  ReleaseJsonParser parser;
+  parser.feed(json, strlen(json));
+  EXPECT_FALSE(parser.hasError());
+  EXPECT_FALSE(parser.isComplete());
 }
 
 TEST(ReleaseJsonParser, FirmwareNotFirstAsset) {
