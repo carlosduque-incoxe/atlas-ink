@@ -18,7 +18,13 @@
 #include "FirmwareFlasher.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/carlosduque-incoxe/atlas-ink/releases/latest";
+
+bool parseSemver(const char* text, int& major, int& minor, int& patch) {
+  if (!text) return false;
+  while (*text != '\0' && (*text < '0' || *text > '9')) ++text;
+  return sscanf(text, "%d.%d.%d", &major, &minor, &patch) == 3;
+}
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -68,14 +74,18 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
 
   const auto currentVersion = CROSSPOINT_VERSION;
 
-  // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+  // GitHub tags may be prefixed (for example "v1.5.2"). Refuse an
+  // unparseable version instead of comparing uninitialised integers.
+  if (!parseSemver(latestVersion.c_str(), latestMajor, latestMinor, latestPatch) ||
+      !parseSemver(currentVersion, currentMajor, currentMinor, currentPatch)) {
+    LOG_ERR("OTA", "Invalid semver current=%s latest=%s", currentVersion, latestVersion.c_str());
+    return false;
+  }
 
   /*
    * Compare major versions.

@@ -1,4 +1,6 @@
 name: Compile Release
+permissions:
+  contents: write
 on:
   push:
     tags:
@@ -32,16 +34,22 @@ jobs:
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: pio-${{ runner.os }}-
 
-      - name: Build CrossPoint
+      - name: Build Atlas Ink
         run: pio run -e gh_release
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CrossPoint-${{ github.ref_name }}
+          name: Atlas-Ink-${{ github.ref_name }}
           path: |
             .pio/build/gh_release/bootloader.bin
             .pio/build/gh_release/firmware.bin
             .pio/build/gh_release/firmware.elf
             .pio/build/gh_release/firmware.map
             .pio/build/gh_release/partitions.bin
+
+      - name: Publish firmware release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: .pio/build/gh_release/firmware.bin
