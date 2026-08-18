@@ -2,7 +2,7 @@
 
 ## Misión
 
-Atlas Ink convierte el XTEINK X4 base en un **terminal e-ink programable de consulta y verificación para Carlos**. La lectura de ebooks se conserva como función secundaria heredada, pero no dirige el producto.
+Atlas Ink convierte el XTEINK X4 base completo en un **terminal e-ink programable de consulta y verificación para Carlos**. Atlas posee la portada, todos los menús, la navegación, la pantalla de reposo/bloqueo y el modelo de datos. La lectura de ebooks puede conservarse si aporta valor, pero ninguna estructura heredada del lector limita el producto.
 
 El dispositivo está pensado para recibir atención ocasional: debe mostrar información útil y persistente sin depender de notificaciones, sonido ni vigilancia constante.
 
@@ -16,10 +16,25 @@ El dispositivo está pensado para recibir atención ocasional: debe mostrar info
 6. **Autonomía práctica.** Objetivo mínimo: 24 horas de uso normal. Puede permanecer conectado y la eficiencia no prevalece sobre fiabilidad o utilidad.
 7. **Evolución continua, no temeraria.** Atlas revisa el producto cada día y puede implementar mejoras autónomamente, pero una release solo se publica tras gates reales y las funciones con impacto físico se prueban por etapas.
 8. **Identidad Atlas.** Interfaz monocroma, directa, legible y coherente con el símbolo Atlas Ink.
+9. **Dispositivo completo.** No añadir módulos Atlas dentro de una interfaz de ebook para evitar molestar. Rediseñar el shell entero alrededor de consulta, calendario, tareas, agentes, estado y verificación.
 
-## Primer producto: Portada Atlas
+## Atlas Shell
 
-La portada será una pantalla de vistazo con:
+La navegación principal deja de ser la del lector y pasa a ser propiedad de Atlas:
+
+- **Portada:** estado de hoy, tareas críticas, próxima cita, bloqueos y frescura de datos.
+- **Hoy:** calendario, vencimientos y decisiones pendientes en una línea temporal compacta.
+- **Tareas:** prioridades de Aerovía/Vikunja, navegación y detalle legible.
+- **Agentes:** trabajos activos, bloqueados, terminados y resultados pendientes de revisar.
+- **Estado:** salud resumida de servicios seleccionados, casa y trabajo; consulta por defecto, no control destructivo.
+- **Consulta:** QR, notas, códigos, listas y respuestas preparadas por Atlas.
+- **Ajustes:** red, actualización firmada, energía y diagnóstico del dispositivo.
+
+La pantalla de reposo/bloqueo es una superficie de producto: conserva hora/fecha, próxima cita, tarea más crítica, bloqueos y antigüedad de los datos con consumo mínimo. No debe requerir red para dibujarse.
+
+## Primer hito: Atlas Shell y Portada viva
+
+La portada y la pantalla de reposo serán superficies de vistazo con:
 
 - hasta 5 tareas críticas/próximas de Aerovía/Vikunja;
 - prioridad, proyecto, vencimiento y estado breve;
@@ -27,6 +42,8 @@ La portada será una pantalla de vistazo con:
 - fecha/hora de la última actualización válida;
 - indicador inequívoco de datos en caché o error de conexión;
 - acción manual **Actualizar** y acceso a detalle paginado.
+- próxima cita o bloque de calendario disponible;
+- navegación directa al resto del shell Atlas, sin pasar por menús heredados de ebook.
 
 La integración usará un feed compacto de dispositivo. El backend selecciona y reduce los datos; el X4 no descarga el tablero completo ni interpreta HTML arbitrario.
 
@@ -80,6 +97,14 @@ Límites previstos: respuesta <= 12 KiB, máximo 5 tareas y 5 agentes, textos no
 - [ ] Tareas críticas de Aerovía/Vikunja.
 - [ ] Estado resumido de agentes/automatizaciones.
 - [ ] QA físico 30/60/120 s, red caída, respuesta corrupta y rollback.
+
+### Fase B2 — Atlas Shell completo
+
+- [ ] Sustituir el menú principal heredado por Portada, Hoy, Tareas, Agentes, Estado, Consulta y Ajustes.
+- [ ] Convertir reposo/bloqueo en panel offline útil con calendario y tarea crítica.
+- [ ] Definir feed agregado versionado para portada/calendario/agentes sin credenciales maestras.
+- [ ] Mantener lector únicamente como capacidad secundaria opcional.
+- [ ] Verificar botones, táctil, despertar, reposo, batería y rollback en hardware real.
 
 ### Fase C — módulos de consulta
 
