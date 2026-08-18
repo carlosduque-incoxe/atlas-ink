@@ -1,6 +1,8 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -15,6 +17,16 @@ class HttpDownloader {
   // Called with each body chunk as it arrives; return false to abort. Lets a
   // streaming parser consume the response without buffering the whole body.
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
+
+  struct RequestOptions {
+    std::string username;
+    std::string password;
+    std::string bearerToken;
+    const std::atomic<bool>* cancelFlag = nullptr;
+    uint32_t timeoutMs = 60000;
+    uint32_t overallTimeoutMs = 0;
+    int maxRedirects = 5;
+  };
 
   enum DownloadError {
     OK = 0,
@@ -37,6 +49,7 @@ class HttpDownloader {
    */
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
                        const std::string& password = "");
+  static bool fetchUrl(const std::string& url, const DataCallback& onData, const RequestOptions& options);
 
   /**
    * Download a file to the SD card with optional credentials.

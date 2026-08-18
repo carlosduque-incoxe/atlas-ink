@@ -1,44 +1,64 @@
 # Atlas Ink
 
-Atlas Ink is Carlos's autonomous e-ink companion firmware for Hermes/Atlas on
-the base XTEINK X4 (ESP32-C3). It starts from CrossPoint Reader v1.5.0 so the
-known-good display, buttons, SD, Wi-Fi, power management, recovery and dual OTA
-partition support remain intact while the Atlas interface is developed.
+Atlas Ink convierte el XTEINK X4 base (ESP32-C3) de Carlos en un terminal e-ink programable de consulta y verificación. Parte de CrossPoint Reader para conservar display, botones, SD, Wi-Fi, energía, recuperación y particiones OTA A/B ya probadas.
 
-## Bootstrap 1.5.1
+El contrato de producto y los gates de evolución están en [`ATLAS_INK_PRODUCT.md`](ATLAS_INK_PRODUCT.md).
 
-The first bootstrap deliberately keeps the CrossPoint user interface. Its only
-new runtime responsibility is to establish the managed update channel:
+## Estado operativo
 
-- checks `carlosduque-incoxe/atlas-ink` releases automatically;
-- checks only while USB power is connected;
-- reuses the last Wi-Fi network already saved on the SD card;
-- waits 30 seconds after boot, retries bounded failures, and checks every six
-  hours after a successful no-update response;
-- requires an ECDSA P-256 signature from the pinned Atlas Ink release key;
-- binds the signature to version, byte size and GitHub SHA-256 digest;
-- calculates SHA-256 while streaming into the inactive OTA partition and
-  refuses to select the slot unless size, digest, ESP image and chip guard pass;
-- records the previous and target A/B slots in one checksummed NVS blob; a new
-  slot gets one boot attempt and is armed only after storage, display, settings
-  and activity routing initialize; it must then survive 60 seconds and at least
-  100 complete main-loop iterations, otherwise the next reset retries rollback
-  to the previous slot;
-- never erases stock flash, NVS, SD data, or Wi-Fi credentials.
+- La primera instalación de Atlas Ink se hace por USB sin borrar bootloader, NVS, SD ni el backup stock.
+- Las versiones posteriores se instalan manualmente desde `Ajustes -> Actualizar`.
+- La comprobación OTA automática está deshabilitada: la implementación síncrona anterior bloqueó el loop principal a los 30 segundos en hardware real.
+- No se reintroduce red automática hasta disponer de un diseño asíncrono con límites, cancelación y QA físico.
+- Cada release exige firma ECDSA P-256 offline, SHA-256, imagen ESP32-C3 válida, A/B, health check y rollback.
+- Build, tests, firma y publicación son locales. GitHub CI no forma parte del flujo normal de Atlas Ink.
 
-GitHub TLS protects transport, while the pinned key protects release authority.
-The private signing key is stored outside GitHub and the repository. CI only
-builds artifacts; Atlas verifies them, signs locally, and then creates a release.
+## Seguridad OTA
 
-## Release discipline
+1. El firmware consulta releases de `carlosduque-incoxe/atlas-ink` solo cuando Carlos inicia la actualización.
+2. Exige `firmware.bin`, manifiesto y firma de la clave pública fijada en el firmware.
+3. Valida semver, tamaño, SHA-256, firma ECDSA, formato de imagen y chip antes de seleccionar el slot inactivo.
+4. Registra slot anterior/nuevo en NVS con integridad.
+5. La versión nueva solo se confirma tras la ventana de salud; un fallo vuelve al slot anterior.
+6. La clave privada permanece fuera del repo y de GitHub.
 
-1. Build and test from a clean committed revision.
-2. Inspect the ESP32-C3 image and partition fit.
-3. Tag a semantic version; CI builds an immutable artifact from that tag.
-4. Atlas verifies the build, signs a canonical manifest locally, then publishes
-   `firmware.bin`, `firmware.bin.manifest`, and `firmware.bin.sig`.
-5. Verify signature, release digest, image chip and partition fit independently.
-6. Never publish an autonomous update until its hardware-risk gates pass.
+## Portada Atlas
 
-The original full-device stock backup remains private and is not part of this
-repository.
+La primera función de terminal programable es una portada manual para tareas importantes de Aerovía/Vikunja:
+
+- menú principal `Atlas`;
+- hasta cinco tareas abiertas con prioridad >= 3;
+- orden por prioridad, fecha límite e ID;
+- resumen de agentes reservado para el mismo feed;
+- última copia válida visible sin Wi-Fi;
+- actualización solo al pulsar `Actualizar`;
+- worker con timeout, límite de 12 KiB, JSON acotado y sin redirects;
+- caché temporal + backup + rename;
+- el binario no contiene tokens.
+
+### Provisioning
+
+El archivo privado es `/.crosspoint/atlas.json` en la SD:
+
+```json
+{
+  "url": "http://10.10.1.111:3456/api/v2/atlas-ink/feed",
+  "token": "TOKEN_DE_SOLO_ATLAS_INK_FEED"
+}
+```
+
+En el primer arranque, el firmware valida URL/token y reescribe el token en formato ofuscado con integridad ligada al hardware. El archivo real no se añade al repo ni se envía por mensajería.
+
+La versión inicial acepta únicamente HTTP hacia IPv4 privadas RFC1918. Es una restricción deliberada: el backend wolfSSL actual no valida la identidad TLS. El token es dedicado, revocable y solo tiene permiso `atlas_ink.feed`; HTTPS no se habilitará hasta añadir CA o pinning real.
+
+## Disciplina de release
+
+1. Partir de revisión comprometida y árbol limpio.
+2. Formatear y ejecutar toda la suite nativa.
+3. Compilar localmente `gh_release` y verificar tamaño, partición e imagen ESP32-C3.
+4. Firmar offline y publicar binario, manifiesto y firma.
+5. Descargar la release publicada y verificar firma/digest de nuevo.
+6. Probar manualmente en hardware: arranque, botones/táctil, 30/60/120 s, refresco, caché sin red y rollback.
+7. No promover cambios de red/energía sin QA físico explícito.
+
+El backup completo stock sigue siendo privado y no forma parte del repositorio.

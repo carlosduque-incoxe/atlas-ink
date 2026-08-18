@@ -1,6 +1,7 @@
 #include "HttpDownloader.h"
 
 #include <Arduino.h>
+#include <HttpAuthPolicy.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <base64.h>
@@ -25,34 +26,72 @@ namespace {
 constexpr int HTTP_RX_BUF = 2048;
 constexpr int HTTP_TX_BUF = 512;
 #endif
-// Per-socket-op timeout. Some OPDS download endpoints are slow to send headers
-// (>15s) and chunked catalogs stall mid-body, so 15s killed them. 60s gives
-// slow servers room. esp_http_client's timeout_ms is uint32, so unlike Arduino
-// HTTPClient's uint16 setTimeout it doesn't silently truncate.
-constexpr int HTTP_TIMEOUT_MS = 60000;
+// Per-socket timeout and redirect count come from RequestOptions. Defaults
+// preserve the historic 60 s / five-hop behavior for existing callers.
 constexpr size_t READ_CHUNK = 1024;
-constexpr int MAX_REDIRECTS = 5;
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
   HttpDownloader::ProgressCallback progress;
   bool* cancelFlag = nullptr;
+  const std::atomic<bool>* atomicCancelFlag = nullptr;
   size_t total = 0;
   size_t downloaded = 0;
+  unsigned long startedAt = 0;
+  uint32_t overallTimeoutMs = 0;
+  bool timedOut = false;
 };
 
 bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
-#if defined(FREEINK_NET_WOLFSSL)
-HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
-                                         const std::string& password, Sink& sink) {
-  std::string url = startUrl;
+bool hasBasicAuth(const HttpDownloader::RequestOptions& options) {
+  return http_auth_policy::hasBasicAuth(options.username);
+}
 
-  for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
+bool hasAnyBasicCredential(const HttpDownloader::RequestOptions& options) {
+  return !options.username.empty() || !options.password.empty();
+}
+
+bool hasBearerAuth(const HttpDownloader::RequestOptions& options) { return !options.bearerToken.empty(); }
+
+bool validateAuthOptions(const HttpDownloader::RequestOptions& options) {
+  if (hasAnyBasicCredential(options) && hasBearerAuth(options)) {
+    LOG_ERR("HTTP", "Basic and Bearer credentials cannot be combined");
+    return false;
+  }
+  return true;
+}
+
+bool shouldAbort(Sink& sink) {
+  if ((sink.cancelFlag && *sink.cancelFlag) ||
+      (sink.atomicCancelFlag && sink.atomicCancelFlag->load(std::memory_order_acquire))) {
+    return true;
+  }
+  if (sink.overallTimeoutMs > 0 && millis() - sink.startedAt >= sink.overallTimeoutMs) {
+    sink.timedOut = true;
+    return true;
+  }
+  return false;
+}
+
+void clearCredentials(HttpDownloader::RequestOptions& options) {
+  options.username.clear();
+  options.password.clear();
+  options.bearerToken.clear();
+}
+
+#if defined(FREEINK_NET_WOLFSSL)
+HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const HttpDownloader::RequestOptions& options,
+                                         Sink& sink) {
+  std::string url = startUrl;
+  HttpDownloader::RequestOptions activeOptions = options;
+
+  for (int hop = 0; hop <= options.maxRedirects; ++hop) {
+    if (shouldAbort(sink)) return sink.timedOut ? HttpDownloader::HTTP_ERROR : HttpDownloader::ABORTED;
     freeink::SecureHttpClient http;
-    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setTimeout(options.timeoutMs);
     http.setInsecure();
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
@@ -62,10 +101,12 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     // append a second User-Agent header, which strict servers reject (aiohttp
     // answers 400 "Duplicate 'User-Agent' header found").
     http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
-    if (!username.empty() && !password.empty()) {
-      const std::string credentials = username + ":" + password;
+    if (hasBasicAuth(activeOptions)) {
+      const std::string credentials = activeOptions.username + ":" + activeOptions.password;
       const String encoded = base64::encode(credentials.c_str());
       http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+    } else if (hasBearerAuth(activeOptions)) {
+      http.addHeader("Authorization", std::string("Bearer ") + activeOptions.bearerToken);
     }
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
@@ -78,19 +119,30 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
           return true;
         },
-        [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
+        [&sink]() { return shouldAbort(sink); });
 
-    if (http.aborted()) return HttpDownloader::ABORTED;
+    if (http.aborted()) return sink.timedOut ? HttpDownloader::HTTP_ERROR : HttpDownloader::ABORTED;
     if (status < 0) {
       LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;
     }
     if (isRedirect(status)) {
+      if (hop >= options.maxRedirects) {
+        LOG_ERR("HTTP", "too many redirects");
+        return HttpDownloader::HTTP_ERROR;
+      }
       const std::string location = http.getHeader("location");
-      if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, url)) {
+      std::string nextUrl;
+      if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, nextUrl)) {
         LOG_ERR("HTTP", "wolfSSL bad redirect: %d", status);
         return HttpDownloader::HTTP_ERROR;
       }
+      if ((hasBasicAuth(activeOptions) || hasBearerAuth(activeOptions)) &&
+          !http_auth_policy::sameOrigin(url, nextUrl)) {
+        LOG_DBG("HTTP", "Stripping credentials on cross-origin redirect");
+        clearCredentials(activeOptions);
+      }
+      url = std::move(nextUrl);
       continue;
     }
     if (status != 200) {
@@ -115,13 +167,13 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 // pushes the whole body through an event callback and reports a chunked body
 // that ends early as ESP_ERR_HTTP_INCOMPLETE_DATA, whereas the read loop streams
 // large/slow files and surfaces a short read directly.
-HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
+HttpDownloader::DownloadError runGet(const std::string& url, const HttpDownloader::RequestOptions& options,
                                      Sink& sink) {
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
   config.buffer_size_tx = HTTP_TX_BUF;
-  config.timeout_ms = HTTP_TIMEOUT_MS;
+  config.timeout_ms = options.timeoutMs;
   // Verify HTTPS against the bundled CA roots. This build has esp-tls
   // CONFIG_ESP_TLS_INSECURE off, so an unverified TLS handshake can't be set
   // up at all; the model is public servers over verified https and local
@@ -138,16 +190,23 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
-  if (!username.empty() && !password.empty()) {
+  if (hasBasicAuth(options)) {
     // Preemptive Basic auth, like the prior addHeader; don't wait for a 401.
-    const std::string credentials = username + ":" + password;
+    const std::string credentials = options.username + ":" + options.password;
     const String header = "Basic " + base64::encode(credentials.c_str());
+    esp_http_client_set_header(client, "Authorization", header.c_str());
+  } else if (hasBearerAuth(options)) {
+    const std::string header = "Bearer " + options.bearerToken;
     esp_http_client_set_header(client, "Authorization", header.c_str());
   }
 
   // open()/read() does not auto-follow redirects (only perform() does), so step
   // 30x responses manually. OPDS download endpoints and the GitHub release CDN
   // both redirect.
+  if (shouldAbort(sink)) {
+    esp_http_client_cleanup(client);
+    return sink.timedOut ? HttpDownloader::HTTP_ERROR : HttpDownloader::ABORTED;
+  }
   esp_err_t err = esp_http_client_open(client, 0);
   if (err != ESP_OK) {
     LOG_ERR("HTTP", "open failed: %s", esp_err_to_name(err));
@@ -156,8 +215,29 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
   int64_t contentLength = esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
-  for (int hop = 0; isRedirect(status) && hop < MAX_REDIRECTS; ++hop) {
+  bool credentialsActive = hasBasicAuth(options) || hasBearerAuth(options);
+  auto redirectUrl = makeUniqueNoThrow<char[]>(1024);
+  for (int hop = 0; isRedirect(status) && hop < options.maxRedirects; ++hop) {
+    if (shouldAbort(sink)) {
+      esp_http_client_cleanup(client);
+      return sink.timedOut ? HttpDownloader::HTTP_ERROR : HttpDownloader::ABORTED;
+    }
+    std::string previousUrl;
+    if (redirectUrl && esp_http_client_get_url(client, redirectUrl.get(), 1024) == ESP_OK) {
+      previousUrl = redirectUrl.get();
+    }
     if (esp_http_client_set_redirection(client) != ESP_OK) break;
+    if (credentialsActive) {
+      bool sameRedirectOrigin = false;
+      if (redirectUrl && !previousUrl.empty() && esp_http_client_get_url(client, redirectUrl.get(), 1024) == ESP_OK) {
+        sameRedirectOrigin = http_auth_policy::sameOrigin(previousUrl, redirectUrl.get());
+      }
+      if (!sameRedirectOrigin) {
+        LOG_DBG("HTTP", "Stripping credentials on cross-origin or unverifiable redirect");
+        esp_http_client_delete_header(client, "Authorization");
+        credentialsActive = false;
+      }
+    }
     esp_http_client_close(client);
     err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
@@ -187,9 +267,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   while (true) {
-    if (sink.cancelFlag && *sink.cancelFlag) {
+    if (shouldAbort(sink)) {
       esp_http_client_cleanup(client);
-      return HttpDownloader::ABORTED;
+      return sink.timedOut ? HttpDownloader::HTTP_ERROR : HttpDownloader::ABORTED;
     }
     const int read = esp_http_client_read(client, buf.get(), READ_CHUNK);
     if (read < 0) {
@@ -220,12 +300,16 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 // speaks TLS 1.3 and reads large bodies from servers where the esp_http_client/
 // mbedTLS path fails to connect or stalls mid-stream. Plain-http URLs still use a
 // WiFiClient inside runGetWolf, so this is safe for non-TLS targets too.
-HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
-                                           const std::string& password, Sink& sink) {
+HttpDownloader::DownloadError runGetSecure(const std::string& url, const HttpDownloader::RequestOptions& options,
+                                           Sink& sink) {
+  if (!validateAuthOptions(options)) return HttpDownloader::HTTP_ERROR;
+  sink.startedAt = millis();
+  sink.overallTimeoutMs = options.overallTimeoutMs;
+  sink.timedOut = false;
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink);
+  return runGetWolf(url, options, sink);
 #else
-  return runGet(url, username, password, sink);
+  return runGet(url, options, sink);
 #endif
 }
 }  // namespace
@@ -233,29 +317,44 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
                               const std::string& password) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
+  RequestOptions options;
+  options.username = username;
+  options.password = password;
   Sink sink;
   sink.write = [&outContent](const uint8_t* data, size_t len) { return outContent.write(data, len) == len; };
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, options, sink) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, const std::string& username,
                               const std::string& password) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
+  RequestOptions options;
+  options.username = username;
+  options.password = password;
   outContent.clear();  // start clean; the sink appends, so don't carry prior content
   Sink sink;
   sink.write = [&outContent](const uint8_t* data, size_t len) {
     outContent.append(reinterpret_cast<const char*>(data), len);
     return true;
   };
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, options, sink) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,
                               const std::string& password) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
+  RequestOptions options;
+  options.username = username;
+  options.password = password;
+  return fetchUrl(url, onData, options);
+}
+
+bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const RequestOptions& options) {
+  LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
+  sink.atomicCancelFlag = options.cancelFlag;
   sink.write = onData;
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, options, sink) == OK;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
@@ -277,7 +376,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.cancelFlag = cancelFlag;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
-  const DownloadError result = runGetSecure(url, username, password, sink);
+  RequestOptions options;
+  options.username = username;
+  options.password = password;
+  const DownloadError result = runGetSecure(url, options, sink);
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
   file.close();
