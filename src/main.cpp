@@ -33,6 +33,7 @@
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
 #include "network/AtlasAutoOta.h"
+#include "network/AtlasBootHealth.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -263,6 +264,7 @@ void setupDisplayAndFonts(bool seamless = false) {
 
 void setup() {
   BoardConfig::holdPowerRails();
+  atlas_boot_health::begin();
 
   t1 = millis();
 
@@ -464,6 +466,7 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   gpio.update();
+  atlas_boot_health::loop();
   atlas_auto_ota::loop(gpio.isUsbConnected());
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 

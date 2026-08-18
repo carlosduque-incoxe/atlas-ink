@@ -17,8 +17,11 @@ class ReleaseJsonParser {
 
   bool foundTag() const;
   bool foundFirmware() const;
+  bool foundSignature() const;
   const char* getTagName() const;
   const char* getFirmwareUrl() const;
+  const char* getFirmwareDigest() const;
+  const char* getSignatureUrl() const;
   size_t getFirmwareSize() const;
 
  private:
@@ -35,6 +38,7 @@ class ReleaseJsonParser {
     ASSET_NAME,
     ASSET_URL,
     ASSET_SIZE,
+    ASSET_DIGEST,
   };
 
   static void sOnKey(void* ctx, const char* key, size_t len);
@@ -58,11 +62,15 @@ class ReleaseJsonParser {
 
   char tagName[32];
   char firmwareUrl[512];
+  char firmwareDigest[80];
+  char signatureUrl[512];
   size_t firmwareSize;
   bool tagFound;
   bool firmwareFound;
+  bool signatureFound;
 
   char currentAssetName[32];
   char currentAssetUrl[512];
+  char currentAssetDigest[80];
   size_t currentAssetSize;
 };

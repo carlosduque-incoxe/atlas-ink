@@ -9,12 +9,18 @@
 #include <ReleaseJsonParser.h>
 #include <esp_ota_ops.h>
 #include <esp_wifi.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/sha256.h>
 // clang-format on
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
+#include "AtlasBootHealth.h"
+#include "AtlasInkReleasePublicKey.h"
 #include "FirmwareFlasher.h"
 
 namespace {
@@ -25,9 +31,47 @@ bool parseSemver(const char* text, int& major, int& minor, int& patch) {
   while (*text != '\0' && (*text < '0' || *text > '9')) ++text;
   return sscanf(text, "%d.%d.%d", &major, &minor, &patch) == 3;
 }
+
+int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+bool parseGithubDigest(const char* digest, std::array<uint8_t, 32>& out) {
+  constexpr char prefix[] = "sha256:";
+  if (!digest || std::strncmp(digest, prefix, sizeof(prefix) - 1) != 0) return false;
+  const char* hex = digest + sizeof(prefix) - 1;
+  if (std::strlen(hex) != out.size() * 2) return false;
+  for (size_t i = 0; i < out.size(); ++i) {
+    const int high = hexNibble(hex[i * 2]);
+    const int low = hexNibble(hex[i * 2 + 1]);
+    if (high < 0 || low < 0) return false;
+    out[i] = static_cast<uint8_t>((high << 4) | low);
+  }
+  return true;
+}
+
+bool constantTimeEqual(const uint8_t* left, const uint8_t* right, size_t len) {
+  uint8_t diff = 0;
+  for (size_t i = 0; i < len; ++i) diff |= left[i] ^ right[i];
+  return diff == 0;
+}
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
+  updateAvailable = false;
+  signatureVerified = false;
+  latestVersion.clear();
+  otaUrl.clear();
+  otaDigest.clear();
+  otaSignatureUrl.clear();
+  otaSize = 0;
+  processedSize = 0;
+  totalSize = 0;
+  otaSha256.fill(0);
+
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
@@ -45,8 +89,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return HTTP_ERROR;
   }
 
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no");
+  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s signature=%s", releaseParser.foundTag() ? "yes" : "no",
+          releaseParser.foundFirmware() ? "yes" : "no", releaseParser.foundSignature() ? "yes" : "no");
 
   if (!releaseParser.foundTag()) {
     LOG_ERR("OTA", "No tag_name in release JSON");
@@ -58,15 +102,75 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return NO_UPDATE;
   }
 
+  if (!releaseParser.foundSignature()) {
+    LOG_ERR("OTA", "No firmware.bin.sig asset found");
+    return SIGNATURE_ERROR;
+  }
+
   latestVersion = releaseParser.getTagName();
   otaUrl = releaseParser.getFirmwareUrl();
+  otaDigest = releaseParser.getFirmwareDigest();
+  otaSignatureUrl = releaseParser.getSignatureUrl();
   otaSize = releaseParser.getFirmwareSize();
   totalSize = otaSize;
+
+  if (otaSize == 0 || !parseGithubDigest(otaDigest.c_str(), otaSha256)) {
+    LOG_ERR("OTA", "Missing or invalid GitHub SHA256 digest");
+    return DIGEST_ERROR;
+  }
+
+  signatureVerified = verifyReleaseSignature();
+  if (!signatureVerified) return SIGNATURE_ERROR;
   updateAvailable = true;
 
   LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
   LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
   return OK;
+}
+
+bool OtaUpdater::verifyReleaseSignature() {
+  std::array<uint8_t, 96> signature{};
+  size_t signatureSize = 0;
+  const bool fetched = HttpDownloader::fetchUrl(otaSignatureUrl, [&](const uint8_t* data, size_t len) {
+    if (len > signature.size() - signatureSize) return false;
+    std::memcpy(signature.data() + signatureSize, data, len);
+    signatureSize += len;
+    return true;
+  });
+  if (!fetched || signatureSize == 0) {
+    LOG_ERR("OTA", "Release signature fetch failed");
+    return false;
+  }
+
+  char manifest[256];
+  const int manifestLen =
+      std::snprintf(manifest, sizeof(manifest), "ATLAS-INK-RELEASE-V1\nversion=%s\nsize=%zu\ndigest=%s\n",
+                    latestVersion.c_str(), otaSize, otaDigest.c_str());
+  if (manifestLen <= 0 || static_cast<size_t>(manifestLen) >= sizeof(manifest)) return false;
+
+  uint8_t manifestSha[32];
+  if (mbedtls_sha256(reinterpret_cast<const uint8_t*>(manifest), static_cast<size_t>(manifestLen), manifestSha, 0) != 0)
+    return false;
+
+  mbedtls_pk_context publicKey;
+  mbedtls_pk_init(&publicKey);
+  const int parseResult = mbedtls_pk_parse_public_key(
+      &publicKey, reinterpret_cast<const uint8_t*>(atlas_release_key::PEM), sizeof(atlas_release_key::PEM));
+  if (parseResult != 0) {
+    LOG_ERR("OTA", "Pinned release public key parse failed: -0x%04X", -parseResult);
+    mbedtls_pk_free(&publicKey);
+    return false;
+  }
+
+  const int verifyResult = mbedtls_pk_verify(&publicKey, MBEDTLS_MD_SHA256, manifestSha, sizeof(manifestSha),
+                                             signature.data(), signatureSize);
+  mbedtls_pk_free(&publicKey);
+  if (verifyResult != 0) {
+    LOG_ERR("OTA", "Release signature rejected: -0x%04X", -verifyResult);
+    return false;
+  }
+  LOG_INF("OTA", "Release signature verified");
+  return true;
 }
 
 bool OtaUpdater::isUpdateNewer() const {
@@ -119,7 +223,7 @@ bool OtaUpdater::isUpdateNewer() const {
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
 
 OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
-  if (!isUpdateNewer()) {
+  if (!signatureVerified || !isUpdateNewer()) {
     return UPDATE_OLDER_ERROR;
   }
 
@@ -153,6 +257,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   uint8_t hdr[14];
   size_t hdrLen = 0;
   bool wrongChip = false;
+  mbedtls_sha256_context downloadSha;
+  mbedtls_sha256_init(&downloadSha);
+  mbedtls_sha256_starts(&downloadSha, 0);
   const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);
@@ -173,6 +280,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
       flashOk = false;
       return false;  // abort the transfer
     }
+    mbedtls_sha256_update(&downloadSha, data, len);
     processedSize += len;
     // Fire the callback only on whole-percent change. Per-chunk updates wake the
     // render task, whose framebuffer work contends with TLS on the internal arena,
@@ -190,6 +298,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
+  uint8_t downloadedSha[32];
+  mbedtls_sha256_finish(&downloadSha, downloadedSha);
+  mbedtls_sha256_free(&downloadSha);
+
   if (wrongChip) {
     LOG_ERR("OTA", "Firmware install aborted: wrong device");
     esp_ota_abort(otaHandle);
@@ -202,15 +314,29 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
   }
 
+  if (processedSize != otaSize || !constantTimeEqual(downloadedSha, otaSha256.data(), otaSha256.size())) {
+    LOG_ERR("OTA", "Firmware digest mismatch (bytes=%zu expected=%zu)", processedSize, otaSize);
+    esp_ota_abort(otaHandle);
+    return DIGEST_ERROR;
+  }
+  LOG_INF("OTA", "Firmware SHA256 verified");
+
   esp_err = esp_ota_end(otaHandle);  // verifies the written image
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_ota_end failed: %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;
   }
 
+  const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+  if (!runningPartition || !atlas_boot_health::recordPending(runningPartition->address, updatePartition->address)) {
+    LOG_ERR("OTA", "Could not persist A/B rollback marker");
+    return INTERNAL_UPDATE_ERROR;
+  }
+
   esp_err = esp_ota_set_boot_partition(updatePartition);
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "esp_ota_set_boot_partition failed: %s", esp_err_to_name(esp_err));
+    atlas_boot_health::cancelPending();
     return INTERNAL_UPDATE_ERROR;
   }
 

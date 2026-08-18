@@ -1,11 +1,17 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <string>
 
 class OtaUpdater {
   bool updateAvailable = false;
   std::string latestVersion;
   std::string otaUrl;
+  std::string otaDigest;
+  std::string otaSignatureUrl;
+  std::array<uint8_t, 32> otaSha256{};
+  bool signatureVerified = false;
   size_t otaSize = 0;
   size_t processedSize = 0;
   size_t totalSize = 0;
@@ -22,6 +28,8 @@ class OtaUpdater {
     INTERNAL_UPDATE_ERROR,
     OOM_ERROR,
     WRONG_DEVICE_ERROR,
+    SIGNATURE_ERROR,
+    DIGEST_ERROR,
   };
 
   size_t getOtaSize() const { return otaSize; }
@@ -35,4 +43,7 @@ class OtaUpdater {
   const std::string& getLatestVersion() const;
   OtaUpdaterError checkForUpdate();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
+
+ private:
+  bool verifyReleaseSignature();
 };

@@ -15,21 +15,28 @@ new runtime responsibility is to establish the managed update channel:
 - reuses the last Wi-Fi network already saved on the SD card;
 - waits 30 seconds after boot, retries bounded failures, and checks every six
   hours after a successful no-update response;
-- streams the image into the inactive OTA partition and relies on
-  `esp_ota_end()` plus the ESP32 chip guard before switching slots;
+- requires an ECDSA P-256 signature from the pinned Atlas Ink release key;
+- binds the signature to version, byte size and GitHub SHA-256 digest;
+- calculates SHA-256 while streaming into the inactive OTA partition and
+  refuses to select the slot unless size, digest, ESP image and chip guard pass;
+- records the previous and target A/B slots in NVS; a new slot gets one boot
+  attempt and is confirmed only after a 60-second health window, otherwise the
+  next reset rolls back to the previous slot;
 - never erases stock flash, NVS, SD data, or Wi-Fi credentials.
 
-This bootstrap trusts GitHub TLS and repository write control. Independent
-firmware signing, boot health confirmation and hardened rollback are mandatory
-before Atlas publishes feature-bearing autonomous updates.
+GitHub TLS protects transport, while the pinned key protects release authority.
+The private signing key is stored outside GitHub and the repository. CI only
+builds artifacts; Atlas verifies them, signs locally, and then creates a release.
 
 ## Release discipline
 
 1. Build and test from a clean committed revision.
 2. Inspect the ESP32-C3 image and partition fit.
-3. Tag a semantic version; GitHub Actions publishes only `firmware.bin`.
-4. Record the release asset size and SHA-256.
-5. Never publish an autonomous update until its hardware-risk gates pass.
+3. Tag a semantic version; CI builds an immutable artifact from that tag.
+4. Atlas verifies the build, signs a canonical manifest locally, then publishes
+   `firmware.bin`, `firmware.bin.manifest`, and `firmware.bin.sig`.
+5. Verify signature, release digest, image chip and partition fit independently.
+6. Never publish an autonomous update until its hardware-risk gates pass.
 
 The original full-device stock backup remains private and is not part of this
 repository.

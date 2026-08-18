@@ -163,6 +163,37 @@ TEST(ReleaseJsonParser, PrettyAndMinifiedAgree) {
   EXPECT_EQ(pretty.getFirmwareSize(), minified.getFirmwareSize());
 }
 
+TEST(ReleaseJsonParser, SignedFirmwareAssetsAndDigest) {
+  const char* json = R"({
+      "tag_name":"1.5.2",
+      "assets":[
+        {
+          "digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "name":"firmware.bin",
+          "size":1234567,
+          "browser_download_url":"https://example.com/firmware.bin"
+        },
+        {
+          "browser_download_url":"https://example.com/firmware.bin.sig",
+          "size":71,
+          "name":"firmware.bin.sig"
+        }
+      ]
+    })";
+
+  ReleaseJsonParser parser;
+  feedChunked(parser, json, 7);
+
+  EXPECT_TRUE(parser.foundTag());
+  EXPECT_TRUE(parser.foundFirmware());
+  EXPECT_TRUE(parser.foundSignature());
+  EXPECT_STREQ(parser.getTagName(), "1.5.2");
+  EXPECT_STREQ(parser.getFirmwareUrl(), "https://example.com/firmware.bin");
+  EXPECT_STREQ(parser.getFirmwareDigest(), "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+  EXPECT_STREQ(parser.getSignatureUrl(), "https://example.com/firmware.bin.sig");
+  EXPECT_EQ(parser.getFirmwareSize(), 1234567u);
+}
+
 TEST(ReleaseJsonParser, FirmwareNotFirstAsset) {
   const char* json = R"({
       "tag_name": "v1.0.0",
