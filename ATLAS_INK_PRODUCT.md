@@ -14,7 +14,7 @@ El dispositivo está pensado para recibir atención ocasional: debe mostrar info
 4. **Red fuera del loop principal.** Ninguna operación Wi-Fi/TLS/HTTP/OTA puede ejecutarse de forma síncrona dentro del loop de UI. Las primeras versiones usarán actualización manual; la automatización solo volverá tras una máquina de estados acotada y una prueba física de 30/60/120 segundos.
 5. **Secretos fuera del firmware.** El X4 no almacena credenciales maestras de Vikunja, Microsoft, Home Assistant ni otros servicios. Consume feeds mínimos, de solo lectura y con token específico revocable cuando sea necesario.
 6. **Autonomía práctica.** Objetivo mínimo: 24 horas de uso normal. Puede permanecer conectado y la eficiencia no prevalece sobre fiabilidad o utilidad.
-7. **Evolución continua, no temeraria.** Atlas revisa el producto cada día y puede implementar mejoras autónomamente, pero una release solo se publica tras gates reales y las funciones con impacto físico se prueban por etapas.
+7. **Evolución continua, no temeraria.** Atlas mantiene un bucle autónomo cada cuatro horas y puede rediseñar o implementar mejoras con libertad total de producto, pero una release solo se publica tras gates reales y las funciones con impacto físico se prueban por etapas.
 8. **Identidad Atlas.** Interfaz monocroma, directa, legible y coherente con el símbolo Atlas Ink.
 9. **Dispositivo completo.** No añadir módulos Atlas dentro de una interfaz de ebook para evitar molestar. Rediseñar el shell entero alrededor de consulta, calendario, tareas, agentes, estado y verificación.
 
@@ -134,9 +134,9 @@ Candidatos priorizados por utilidad real, no por cantidad:
 - Código/QR: mostrar enlaces, códigos breves o datos para continuar una acción en móvil/PC.
 - Notas rápidas y listas de comprobación offline.
 
-## Política diaria de desarrollo
+## Política del bucle continuo
 
-Cada ejecución diaria:
+Cada ejecución:
 
 1. Lee este contrato, estado Git, última release, incidencias y feedback reciente disponible.
 2. Escoge **una mejora de alto valor y alcance limitado** o un endurecimiento necesario.
