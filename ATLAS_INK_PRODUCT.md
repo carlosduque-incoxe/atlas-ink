@@ -28,9 +28,16 @@ La navegación principal deja de ser la del lector y pasa a ser propiedad de Atl
 - **Agentes:** trabajos activos, bloqueados, terminados y resultados pendientes de revisar.
 - **Estado:** salud resumida de servicios seleccionados, casa y trabajo; consulta por defecto, no control destructivo.
 - **Consulta:** QR, notas, códigos, listas y respuestas preparadas por Atlas.
+- **Aprender:** micro-libro semanal personalizado de unos cinco minutos, con una habilidad, esquema, ejercicio y práctica de siete días.
 - **Ajustes:** red, actualización firmada, energía y diagnóstico del dispositivo.
 
 La pantalla de reposo/bloqueo es una superficie de producto: conserva hora/fecha, próxima cita, tarea más crítica, bloqueos y antigüedad de los datos con consumo mínimo. No debe requerir red para dibujarse.
+
+## Una cosa nueva que aprender
+
+Atlas genera una entrega semanal a partir de las decisiones, fricciones y objetivos recientes de Carlos. No es contenido genérico ni una lista de consejos: cada EPUB desarrolla una sola habilidad de alto retorno, utiliza ejemplos discretos de su operativa, incluye un esquema monocromo, un ejercicio de dos minutos y una práctica medible para siete días.
+
+Los libros se generan y validan fuera del X4, se conservan en una biblioteca versionada y se sincronizan sin sobrescribir archivos existentes. El formato EPUB es una capacidad de lectura; no devuelve el producto a una arquitectura ebook-first. La selección y la navegación pertenecen a Atlas Shell. La red permanece manual/no bloqueante y el libro ya cargado se abre completamente offline.
 
 ## Primer hito: Atlas Shell y Portada viva
 
@@ -100,11 +107,20 @@ Límites previstos: respuesta <= 12 KiB, máximo 5 tareas y 5 agentes, textos no
 
 ### Fase B2 — Atlas Shell completo
 
-- [ ] Sustituir el menú principal heredado por Portada, Hoy, Tareas, Agentes, Estado, Consulta y Ajustes.
+- [ ] Sustituir el menú principal heredado por Portada, Hoy, Tareas, Agentes, Estado, Consulta, Aprender y Ajustes.
 - [ ] Convertir reposo/bloqueo en panel offline útil con calendario y tarea crítica.
 - [ ] Definir feed agregado versionado para portada/calendario/agentes sin credenciales maestras.
 - [ ] Mantener lector únicamente como capacidad secundaria opcional.
 - [ ] Verificar botones, táctil, despertar, reposo, batería y rollback en hardware real.
+
+### Fase B3 — Aprendizaje semanal
+
+- [x] Pipeline local reproducible para EPUB, portada y esquema monocromos.
+- [x] Primera entrega validada: *Hoy, Semana o Fuera de la Cabeza*.
+- [x] Generación semanal personalizada y cola de sincronización silenciosa.
+- [ ] Integrar biblioteca **Aprender** como sección de primer nivel en Atlas Shell.
+- [ ] Sincronización manual/no bloqueante desde manifiesto autenticado cuando el shell esté listo.
+- [ ] Validar apertura, paginación, suspensión/reanudación y lectura offline en el X4 real.
 
 ### Fase C — módulos de consulta
 
