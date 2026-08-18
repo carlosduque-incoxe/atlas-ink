@@ -14,6 +14,7 @@ bool parsePrivateIPv4(const std::string_view host) {
     const size_t dot = host.find('.', start);
     const size_t end = dot == std::string_view::npos ? host.size() : dot;
     if (end == start || end - start > 3) return false;
+    if (end - start > 1U && host[start] == '0') return false;
 
     uint16_t value = 0;
     for (size_t i = start; i < end; ++i) {

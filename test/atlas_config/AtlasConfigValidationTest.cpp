@@ -28,6 +28,9 @@ TEST(AtlasConfigValidation, RejectsMalformedPrivateUrls) {
   EXPECT_FALSE(isValidFeedUrl("http://10.10.1/feed"));
   EXPECT_FALSE(isValidFeedUrl("http://10.10.1.111.2/feed"));
   EXPECT_FALSE(isValidFeedUrl("http://10.10.1.999/feed"));
+  EXPECT_FALSE(isValidFeedUrl("http://010.010.001.111/api/v2/atlas-ink/feed"));
+  EXPECT_FALSE(isValidFeedUrl("http://172.016.0.1/api/v2/atlas-ink/feed"));
+  EXPECT_FALSE(isValidFeedUrl("http://192.168.001.001/api/v2/atlas-ink/feed"));
   EXPECT_FALSE(isValidFeedUrl("http://10.10.1.111:0/feed"));
   EXPECT_FALSE(isValidFeedUrl("http://10.10.1.111:65536/feed"));
   EXPECT_FALSE(isValidFeedUrl("http://10.10.1.111:notaport/feed"));

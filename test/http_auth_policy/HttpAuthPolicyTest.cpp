@@ -1,6 +1,5 @@
-#include <gtest/gtest.h>
-
 #include <HttpAuthPolicy.h>
+#include <gtest/gtest.h>
 
 TEST(HttpAuthPolicy, BasicAuthAllowsEmptyPasswordWhenUsernameExists) {
   EXPECT_TRUE(http_auth_policy::hasBasicAuth("reader"));

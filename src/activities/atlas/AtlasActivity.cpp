@@ -196,9 +196,8 @@ void AtlasActivity::startFetchWorker() {
   workerDone.store(false, std::memory_order_release);
   workerCancel.store(false, std::memory_order_release);
 
-  const BaseType_t created =
-      xTaskCreatePinnedToCore(&workerTrampoline, "AtlasFetch", FETCH_WORKER_STACK, this, FETCH_WORKER_PRIORITY,
-                              &workerTask, 0);
+  const BaseType_t created = xTaskCreatePinnedToCore(&workerTrampoline, "AtlasFetch", FETCH_WORKER_STACK, this,
+                                                     FETCH_WORKER_PRIORITY, &workerTask, 0);
   if (created != pdPASS) {
     workerTask = nullptr;
     state = State::Ready;
@@ -426,10 +425,10 @@ void AtlasActivity::render(RenderLock&&) {
   const int pageWidth = screen.width;
 
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight}, "Atlas");
-  GUI.drawSubHeader(renderer,
-                    Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width,
-                         metrics.tabBarHeight},
-                    statusLine.c_str(), cacheIsStale ? tr(STR_ATLAS_CACHED_BADGE) : nullptr);
+  GUI.drawSubHeader(
+      renderer,
+      Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
+      statusLine.c_str(), cacheIsStale ? tr(STR_ATLAS_CACHED_BADGE) : nullptr);
 
   const int contentTop =
       screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
@@ -456,8 +455,8 @@ void AtlasActivity::render(RenderLock&&) {
                            screen.width - metrics.contentSidePadding * 2, contentHeight - 40};
     UITheme::drawCenteredWrappedText(renderer, emptyBounds, UI_10_FONT_ID, statusLine.c_str(), 4);
   } else if (feed.taskCount == 0) {
-    renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, contentTop + 34, tr(STR_ATLAS_NO_TASKS), true,
-                      EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, contentTop + 34, tr(STR_ATLAS_NO_TASKS),
+                      true, EpdFontFamily::BOLD);
   } else {
     const int listTop = contentTop + (errorLine.empty() ? 0 : 32);
     const int listHeight = std::max(0, contentHeight - agentReserve - (errorLine.empty() ? 0 : 32));

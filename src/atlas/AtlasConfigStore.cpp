@@ -44,8 +44,8 @@ bool AtlasConfigStore::fromJson(JsonVariantConst doc) {
   } else {
     bool ok = false;
     bool tooLong = false;
-    loadedToken = obfuscation::deobfuscateFromBase64(
-        doc["token_obf"] | "", atlas_config_validation::MAX_TOKEN_BYTES, &ok, &tooLong);
+    loadedToken = obfuscation::deobfuscateFromBase64(doc["token_obf"] | "", atlas_config_validation::MAX_TOKEN_BYTES,
+                                                     &ok, &tooLong);
     if (!ok || tooLong) {
       status = AtlasConfigStatus::InvalidToken;
       url.clear();

@@ -174,8 +174,7 @@ TEST(AtlasFeedJsonParser, RejectsExcessiveUnknownNesting) {
   std::string nested(17, '[');
   nested += "0";
   nested.append(17, ']');
-  const std::string json = R"({"schema":1,"generated_at":"x","unknown":)" + nested +
-                           R"(,"tasks":[],"agents":[]})";
+  const std::string json = R"({"schema":1,"generated_at":"x","unknown":)" + nested + R"(,"tasks":[],"agents":[]})";
   expectError(json.c_str(), atlas_feed::ParseError::NestingTooDeep);
 }
 
@@ -197,9 +196,8 @@ TEST(AtlasFeedJsonParser, AcceptsBackendMaximumUnicodeTitle) {
   std::string validTitle;
   validTitle.reserve(320);
   for (size_t i = 0; i < 160; ++i) validTitle += "á";
-  const std::string json =
-      R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":")" + validTitle +
-      R"(","priority":3,"state":"open"}],"agents":[]})";
+  const std::string json = R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":")" + validTitle +
+                           R"(","priority":3,"state":"open"}],"agents":[]})";
 
   auto parser = parseWhole(json.c_str());
   ASSERT_EQ(parser.getError(), atlas_feed::ParseError::None);
@@ -207,19 +205,23 @@ TEST(AtlasFeedJsonParser, AcceptsBackendMaximumUnicodeTitle) {
 }
 
 TEST(AtlasFeedJsonParser, InvalidTaskTypesPriorityAndIdRejected) {
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[{"id":{"bad":1},"title":"t","priority":1,"state":"open"}],"agents":[]})",
-              atlas_feed::ParseError::InvalidType);
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":"t","priority":6,"state":"open"}],"agents":[]})",
-              atlas_feed::ParseError::InvalidNumber);
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[{"id":-1,"title":"t","priority":1,"state":"open"}],"agents":[]})",
-              atlas_feed::ParseError::InvalidNumber);
+  expectError(
+      R"({"schema":1,"generated_at":"x","tasks":[{"id":{"bad":1},"title":"t","priority":1,"state":"open"}],"agents":[]})",
+      atlas_feed::ParseError::InvalidType);
+  expectError(
+      R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":"t","priority":6,"state":"open"}],"agents":[]})",
+      atlas_feed::ParseError::InvalidNumber);
+  expectError(
+      R"({"schema":1,"generated_at":"x","tasks":[{"id":-1,"title":"t","priority":1,"state":"open"}],"agents":[]})",
+      atlas_feed::ParseError::InvalidNumber);
   expectError(R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":9,"priority":1,"state":"open"}],"agents":[]})",
               atlas_feed::ParseError::InvalidType);
 }
 
 TEST(AtlasFeedJsonParser, DuplicateFieldsWhereAmbiguousAreRejected) {
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"id":2,"title":"t","priority":1,"state":"open"}],"agents":[]})",
-              atlas_feed::ParseError::DuplicateField);
+  expectError(
+      R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"id":2,"title":"t","priority":1,"state":"open"}],"agents":[]})",
+      atlas_feed::ParseError::DuplicateField);
   expectError(R"({"schema":1,"generated_at":"x","tasks":[],"agents":[{"name":"a","state":"ok","state":"blocked"}]})",
               atlas_feed::ParseError::DuplicateField);
 }
