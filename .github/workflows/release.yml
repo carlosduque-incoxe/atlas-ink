@@ -27,7 +27,7 @@ jobs:
       - name: Install PlatformIO Core
         run: |
           uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
-          uv pip install --system -U littlefs-python fatfs-ng
+          uv pip install --system -U littlefs-python fatfs-ng PyYAML
 
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
