@@ -190,7 +190,11 @@ void HomeActivity::loop() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, !mappedInput.hasTouch(), false);
   if (handleTouchActions(screen, metrics)) return;
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) backPressSeen = true;
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backPressSeen) {
+    backPressSeen = false;
     if (selectorIndex != actionToIndex(Action::Tasks)) {
       selectorIndex = actionToIndex(Action::Tasks);
       requestUpdate();

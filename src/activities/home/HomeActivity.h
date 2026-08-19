@@ -15,6 +15,9 @@ class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   atlas_feed::Feed feed{};
   bool hasFeed = false;
+  // Home can be entered while Back is still held. Ignore that stale release
+  // until this Home instance observes a fresh Back press.
+  bool backPressSeen = false;
   int selectorIndex = 0;
   const HomeMenuItem initialMenuItem;
 
