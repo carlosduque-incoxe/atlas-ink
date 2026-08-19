@@ -56,6 +56,10 @@ void expectError(const char* json, const atlas_feed::ParseError expected) {
   EXPECT_EQ(parser.getError(), expected) << atlas_feed::AtlasFeedJsonParser::errorName(parser.getError());
 }
 
+std::string feedWithGeneratedAt(const char* generatedAt) {
+  return std::string(R"({"schema":1,"generated_at":")") + generatedAt + R"(","tasks":[],"agents":[]})";
+}
+
 std::string validWithTasks(const size_t count) {
   std::string json = R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[)";
   for (size_t i = 0; i < count; ++i) {
@@ -104,26 +108,78 @@ TEST(AtlasFeedJsonParser, ByteByByteAndIrregularChunkingMatch) {
 }
 
 TEST(AtlasFeedJsonParser, MalformedAndTruncatedJsonRejected) {
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[],"agents":[])", atlas_feed::ParseError::Syntax);
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[,],"agents":[]})", atlas_feed::ParseError::Syntax);
+  expectError(R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[])",
+              atlas_feed::ParseError::Syntax);
+  expectError(R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[,],"agents":[]})",
+              atlas_feed::ParseError::Syntax);
   expectError(R"([])", atlas_feed::ParseError::RootNotObject);
 }
 
 TEST(AtlasFeedJsonParser, WrongMissingAndDuplicateSchemaRejected) {
-  expectError(R"({"schema":2,"generated_at":"x","tasks":[],"agents":[]})", atlas_feed::ParseError::UnsupportedSchema);
-  expectError(R"({"generated_at":"x","tasks":[],"agents":[]})", atlas_feed::ParseError::MissingField);
-  expectError(R"({"schema":1,"schema":1,"generated_at":"x","tasks":[],"agents":[]})",
+  expectError(R"({"schema":2,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[]})",
+              atlas_feed::ParseError::UnsupportedSchema);
+  expectError(R"({"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[]})",
+              atlas_feed::ParseError::MissingField);
+  expectError(R"({"schema":1,"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[]})",
               atlas_feed::ParseError::DuplicateField);
 }
 
 TEST(AtlasFeedJsonParser, RequiredTopLevelFieldsMatterButEtagIsOptional) {
-  auto parser = parseWhole(R"({"schema":1,"generated_at":"x","tasks":[],"agents":[]})");
+  auto parser = parseWhole(R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[]})");
   EXPECT_EQ(parser.getError(), atlas_feed::ParseError::None);
   EXPECT_STREQ(parser.getFeed().etag, "");
 
   expectError(R"({"schema":1,"tasks":[],"agents":[]})", atlas_feed::ParseError::MissingField);
-  expectError(R"({"schema":1,"generated_at":"x","agents":[]})", atlas_feed::ParseError::MissingField);
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[]})", atlas_feed::ParseError::MissingField);
+  expectError(R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","agents":[]})",
+              atlas_feed::ParseError::MissingField);
+  expectError(R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[]})", atlas_feed::ParseError::MissingField);
+}
+
+TEST(AtlasFeedJsonParser, GeneratedAtMustBeCanonicalUtcTimestamp) {
+  const char* invalid[] = {
+      "",
+      "x",
+      "0000-01-01T00:00:00Z",
+      "2026-00-01T00:00:00Z",
+      "2026-13-01T00:00:00Z",
+      "2026-01-00T00:00:00Z",
+      "2026-01-32T00:00:00Z",
+      "2026-04-31T00:00:00Z",
+      "2026-02-29T00:00:00Z",
+      "1900-02-29T00:00:00Z",
+      "2026-08-18T24:00:00Z",
+      "2026-08-18T20:60:00Z",
+      "2026-08-18T20:00:60Z",
+      "2026-08-18T20:00:00.000Z",
+      "2026-08-18T20:00:00+00:00",
+      "2026-08-18T20:00:00z",
+      "2026-08-18T20:00:00Z ",
+      "2026-8-18T20:00:00Z",
+      "2026-08-18t20:00:00Z",
+  };
+
+  for (const char* generatedAt : invalid) {
+    const std::string json = feedWithGeneratedAt(generatedAt);
+    SCOPED_TRACE(generatedAt);
+    expectError(json.c_str(), atlas_feed::ParseError::InvalidTimestamp);
+  }
+}
+
+TEST(AtlasFeedJsonParser, GeneratedAtAcceptsRealGregorianLeapDates) {
+  const char* valid[] = {
+      "0001-01-01T00:00:00Z",
+      "2024-02-29T23:59:59Z",
+      "2000-02-29T00:00:00Z",
+      "9999-12-31T23:59:59Z",
+  };
+
+  for (const char* generatedAt : valid) {
+    const std::string json = feedWithGeneratedAt(generatedAt);
+    SCOPED_TRACE(generatedAt);
+    auto parser = parseWhole(json.c_str());
+    ASSERT_EQ(parser.getError(), atlas_feed::ParseError::None);
+    EXPECT_STREQ(parser.getFeed().generatedAt, generatedAt);
+  }
 }
 
 TEST(AtlasFeedJsonParser, RejectsMoreThanFiveTasksAndAgents) {
@@ -131,13 +187,13 @@ TEST(AtlasFeedJsonParser, RejectsMoreThanFiveTasksAndAgents) {
   expectError(sixTasks.c_str(), atlas_feed::ParseError::LimitExceeded);
 
   const char* sixAgents =
-      R"({"schema":1,"generated_at":"x","tasks":[],"agents":[{"name":"a","state":"ok"},{"name":"b","state":"ok"},{"name":"c","state":"ok"},{"name":"d","state":"ok"},{"name":"e","state":"ok"},{"name":"f","state":"ok"}]})";
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[{"name":"a","state":"ok"},{"name":"b","state":"ok"},{"name":"c","state":"ok"},{"name":"d","state":"ok"},{"name":"e","state":"ok"},{"name":"f","state":"ok"}]})";
   expectError(sixAgents, atlas_feed::ParseError::LimitExceeded);
 }
 
 TEST(AtlasFeedJsonParser, RejectsOversizedFieldsAndBody) {
   std::string title(atlas_feed::MAX_TASK_TITLE_LEN + 1, 'x');
-  std::string json = R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":")" + title +
+  std::string json = R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":1,"title":")" + title +
                      R"(","priority":1,"state":"open"}],"agents":[]})";
   expectError(json.c_str(), atlas_feed::ParseError::FieldTooLong);
 
@@ -150,7 +206,7 @@ TEST(AtlasFeedJsonParser, RejectsOversizedFieldsAndBody) {
 TEST(AtlasFeedJsonParser, UnknownNestedObjectsAndArraysAreIgnored) {
   const char* json = R"({
     "schema": 1,
-    "generated_at": "x",
+    "generated_at": "2026-08-18T20:00:00Z",
     "unknown": [{"deep": {"value": [1, true, null, "ok"]}}],
     "tasks": [{
       "id": "NIL-8",
@@ -174,20 +230,21 @@ TEST(AtlasFeedJsonParser, RejectsExcessiveUnknownNesting) {
   std::string nested(17, '[');
   nested += "0";
   nested.append(17, ']');
-  const std::string json = R"({"schema":1,"generated_at":"x","unknown":)" + nested + R"(,"tasks":[],"agents":[]})";
+  const std::string json =
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","unknown":)" + nested + R"(,"tasks":[],"agents":[]})";
   expectError(json.c_str(), atlas_feed::ParseError::NestingTooDeep);
 }
 
 TEST(AtlasFeedJsonParser, Utf8BoundariesAndEscapes) {
   const char* json =
-      R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":"Niño \uD83D\uDCA1","priority":1,"state":"open"}],"agents":[{"name":"Correo","state":"ok","summary":"Señal"}]})";
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":1,"title":"Niño \uD83D\uDCA1","priority":1,"state":"open"}],"agents":[{"name":"Correo","state":"ok","summary":"Señal"}]})";
   auto parser = parseChunked(json, 2);
   ASSERT_EQ(parser.getError(), atlas_feed::ParseError::None);
   EXPECT_STREQ(parser.getFeed().tasks[0].title, "Niño 💡");
   EXPECT_STREQ(parser.getFeed().agents[0].summary, "Señal");
 
   const char invalid[] =
-      "{\"schema\":1,\"generated_at\":\"x\",\"tasks\":[{\"id\":1,\"title\":\"bad \xC3"
+      "{\"schema\":1,\"generated_at\":\"2026-08-18T20:00:00Z\",\"tasks\":[{\"id\":1,\"title\":\"bad \xC3"
       "\",\"priority\":1,\"state\":\"open\"}],\"agents\":[]}";
   expectError(invalid, atlas_feed::ParseError::InvalidUtf8);
 }
@@ -196,8 +253,8 @@ TEST(AtlasFeedJsonParser, AcceptsBackendMaximumUnicodeTitle) {
   std::string validTitle;
   validTitle.reserve(320);
   for (size_t i = 0; i < 160; ++i) validTitle += "á";
-  const std::string json = R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":")" + validTitle +
-                           R"(","priority":3,"state":"open"}],"agents":[]})";
+  const std::string json = R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":1,"title":")" +
+                           validTitle + R"(","priority":3,"state":"open"}],"agents":[]})";
 
   auto parser = parseWhole(json.c_str());
   ASSERT_EQ(parser.getError(), atlas_feed::ParseError::None);
@@ -206,29 +263,31 @@ TEST(AtlasFeedJsonParser, AcceptsBackendMaximumUnicodeTitle) {
 
 TEST(AtlasFeedJsonParser, InvalidTaskTypesPriorityAndIdRejected) {
   expectError(
-      R"({"schema":1,"generated_at":"x","tasks":[{"id":{"bad":1},"title":"t","priority":1,"state":"open"}],"agents":[]})",
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":{"bad":1},"title":"t","priority":1,"state":"open"}],"agents":[]})",
       atlas_feed::ParseError::InvalidType);
   expectError(
-      R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":"t","priority":6,"state":"open"}],"agents":[]})",
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":1,"title":"t","priority":6,"state":"open"}],"agents":[]})",
       atlas_feed::ParseError::InvalidNumber);
   expectError(
-      R"({"schema":1,"generated_at":"x","tasks":[{"id":-1,"title":"t","priority":1,"state":"open"}],"agents":[]})",
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":-1,"title":"t","priority":1,"state":"open"}],"agents":[]})",
       atlas_feed::ParseError::InvalidNumber);
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"title":9,"priority":1,"state":"open"}],"agents":[]})",
-              atlas_feed::ParseError::InvalidType);
+  expectError(
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":1,"title":9,"priority":1,"state":"open"}],"agents":[]})",
+      atlas_feed::ParseError::InvalidType);
 }
 
 TEST(AtlasFeedJsonParser, DuplicateFieldsWhereAmbiguousAreRejected) {
   expectError(
-      R"({"schema":1,"generated_at":"x","tasks":[{"id":1,"id":2,"title":"t","priority":1,"state":"open"}],"agents":[]})",
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[{"id":1,"id":2,"title":"t","priority":1,"state":"open"}],"agents":[]})",
       atlas_feed::ParseError::DuplicateField);
-  expectError(R"({"schema":1,"generated_at":"x","tasks":[],"agents":[{"name":"a","state":"ok","state":"blocked"}]})",
-              atlas_feed::ParseError::DuplicateField);
+  expectError(
+      R"({"schema":1,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[{"name":"a","state":"ok","state":"blocked"}]})",
+      atlas_feed::ParseError::DuplicateField);
 }
 
 TEST(AtlasFeedJsonParser, ResetAllowsReuseAfterError) {
   atlas_feed::AtlasFeedJsonParser parser;
-  const char* bad = R"({"schema":2,"generated_at":"x","tasks":[],"agents":[]})";
+  const char* bad = R"({"schema":2,"generated_at":"2026-08-18T20:00:00Z","tasks":[],"agents":[]})";
   EXPECT_TRUE(parser.feed(bad, strlen(bad)));
   EXPECT_FALSE(parser.finish());
   EXPECT_EQ(parser.getError(), atlas_feed::ParseError::UnsupportedSchema);

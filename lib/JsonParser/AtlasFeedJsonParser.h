@@ -38,6 +38,7 @@ enum class ParseError : uint8_t {
   InvalidNumber,
   NestingTooDeep,
   TrailingData,
+  InvalidTimestamp,
 };
 
 struct Task {

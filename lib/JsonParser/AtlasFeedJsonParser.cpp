@@ -31,10 +31,57 @@ enum AgentField : uint8_t {
 };
 
 constexpr size_t MAX_UNKNOWN_NESTING_DEPTH = 16;
+constexpr size_t GENERATED_AT_UTC_LEN = 20;
 
 bool isWs(const char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
 
 bool isDigit(const char c) { return c >= '0' && c <= '9'; }
+
+uint8_t parseTwoDigits(const char* value) { return static_cast<uint8_t>((value[0] - '0') * 10 + (value[1] - '0')); }
+
+uint16_t parseFourDigits(const char* value) {
+  return static_cast<uint16_t>((value[0] - '0') * 1000 + (value[1] - '0') * 100 + (value[2] - '0') * 10 +
+                               (value[3] - '0'));
+}
+
+bool isLeapYear(const uint16_t year) { return (year % 4U == 0U && year % 100U != 0U) || year % 400U == 0U; }
+
+uint8_t daysInMonth(const uint16_t year, const uint8_t month) {
+  static constexpr uint8_t DAYS_BY_MONTH[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (month == 2U && isLeapYear(year)) return 29;
+  return DAYS_BY_MONTH[month - 1U];
+}
+
+bool validGeneratedAtUtc(const char* value) {
+  if (strlen(value) != GENERATED_AT_UTC_LEN) return false;
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' || value[16] != ':' ||
+      value[19] != 'Z') {
+    return false;
+  }
+
+  for (uint8_t i = 0; i < GENERATED_AT_UTC_LEN; ++i) {
+    if (i == 4U || i == 7U || i == 10U || i == 13U || i == 16U || i == 19U) continue;
+    if (!isDigit(value[i])) return false;
+  }
+
+  const uint16_t year = parseFourDigits(value);
+  if (year == 0U) return false;
+
+  const uint8_t month = parseTwoDigits(value + 5);
+  if (month < 1U || month > 12U) return false;
+
+  const uint8_t day = parseTwoDigits(value + 8);
+  if (day < 1U || day > daysInMonth(year, month)) return false;
+
+  const uint8_t hour = parseTwoDigits(value + 11);
+  if (hour > 23U) return false;
+
+  const uint8_t minute = parseTwoDigits(value + 14);
+  if (minute > 59U) return false;
+
+  const uint8_t second = parseTwoDigits(value + 17);
+  return second <= 59U;
+}
 
 bool hexValue(const char c, uint16_t& value) {
   if (c >= '0' && c <= '9') {
@@ -208,6 +255,7 @@ class JsonReader {
       } else if (!keyTruncated && strcmp(key, "generated_at") == 0) {
         if (!markRoot(ROOT_GENERATED_AT)) return false;
         if (!parseStringField(feed.generatedAt, sizeof(feed.generatedAt))) return false;
+        if (!validGeneratedAtUtc(feed.generatedAt)) return fail(ParseError::InvalidTimestamp);
       } else if (!keyTruncated && strcmp(key, "etag") == 0) {
         if (!markRoot(ROOT_ETAG)) return false;
         if (!parseStringField(feed.etag, sizeof(feed.etag))) return false;
@@ -775,6 +823,8 @@ const char* AtlasFeedJsonParser::errorName(const ParseError value) {
       return "FieldTooLong";
     case ParseError::InvalidUtf8:
       return "InvalidUtf8";
+    case ParseError::InvalidTimestamp:
+      return "InvalidTimestamp";
     case ParseError::InvalidNumber:
       return "InvalidNumber";
     case ParseError::NestingTooDeep:

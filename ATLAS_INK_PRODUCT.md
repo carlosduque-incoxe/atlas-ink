@@ -81,7 +81,7 @@ La integración usará un feed compacto de dispositivo. El backend selecciona y 
 }
 ```
 
-Límites previstos: respuesta <= 12 KiB, máximo 5 tareas y 5 agentes, textos normalizados a UTF-8 y longitudes acotadas. Los campos desconocidos se ignoran; un esquema futuro incompatible conserva la caché anterior.
+Límites previstos: respuesta <= 12 KiB, máximo 5 tareas y 5 agentes, textos normalizados a UTF-8 y longitudes acotadas. `generated_at` debe ser una marca temporal UTC canónica con forma exacta `YYYY-MM-DDTHH:MM:SSZ`, con `Z` mayúscula, año Gregorian real `0001..9999`, fecha válida incluyendo años bisiestos, hora `00..23` y minuto/segundo `00..59`; no admite cadena vacía, fracciones, offsets, `z` minúscula ni contenido sobrante. Los campos desconocidos se ignoran; un esquema futuro incompatible conserva la caché anterior.
 
 ## Roadmap vivo
 
