@@ -1,0 +1,4 @@
+# Local build/download artifacts
+*.bin
+*.manifest
+*.sig
